@@ -194,6 +194,8 @@ function BookForm({ initial, onSubmit, onCancel, isEdit, tags }: {
 }) {
   const [form, setForm] = useState({ ...initial });
   const [saved, setSaved] = useState(false);
+  const [isbn, setIsbn] = useState("");
+  const [isSearching, setIsSearching] = useState(false);
 
   const set = (field: keyof typeof EMPTY_FORM) =>
     (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) => {
@@ -203,6 +205,52 @@ function BookForm({ initial, onSubmit, onCancel, isEdit, tags }: {
 
   const toggleTag = (id: number) =>
     setForm((f) => ({ ...f, tagIds: f.tagIds.includes(id) ? f.tagIds.filter((x) => x !== id) : [...f.tagIds, id] }));
+
+  // Busca de dados via Open Library
+  const handleSearchISBN = async () => {
+    const normalizedIsbn = isbn.trim().replace(/-/g, "");
+
+    if (!normalizedIsbn) {
+      window.alert("Informe um ISBN para buscar os dados.");
+      return;
+    }
+
+    try {
+      setIsSearching(true);
+      const response = await fetch(`https://openlibrary.org/api/books?bibkeys=ISBN:${normalizedIsbn}&format=json&jscmd=data`);
+
+      if (!response.ok) throw new Error("Falha ao buscar dados do ISBN");
+
+      const data = await response.json();
+      const bookData = data[`ISBN:${normalizedIsbn}`];
+
+      if (!bookData) throw new Error("ISBN não encontrado");
+
+      const authors = Array.isArray(bookData.authors)
+        ? bookData.authors.map((author: { name?: string }) => author?.name).filter(Boolean).join(", ")
+        : "";
+
+      const publishYear = typeof bookData.publish_date === "string"
+        ? Number(bookData.publish_date.match(/\d{4}/)?.[0] || 0)
+        : 0;
+
+      setForm((prev) => ({
+        ...prev,
+        title: bookData.title || prev.title,
+        author: authors || prev.author,
+        year: publishYear || prev.year,
+        pages: typeof bookData.number_of_pages === "number" ? bookData.number_of_pages : prev.pages,
+        cover: bookData.cover?.large || bookData.cover?.medium || bookData.cover?.small || prev.cover,
+      }));
+
+      setIsbn("");
+    } catch (error) {
+      setIsbn("");
+      window.alert("Não foi possível encontrar os dados para este ISBN. Verifique o número e tente novamente.");
+    } finally {
+      setIsSearching(false);
+    }
+  };
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -228,10 +276,35 @@ function BookForm({ initial, onSubmit, onCancel, isEdit, tags }: {
             }
           </div>
           <div className="flex-1 min-w-0">
-            <Field label="URL da capa">
-              <input type="text" placeholder="https://..." value={form.cover} onChange={set("cover")} className={inputCls} />
-            </Field>
-            <p className="text-xs text-muted-foreground mt-1.5">Se vazio, capa padrão será usada.</p>
+            {/* Novo bloco de busca por ISBN */}
+            <div className="flex gap-2 items-end">
+              <div className="flex-1">
+                <Field label="ISBN">
+                  <input
+                    type="text"
+                    placeholder="Ex: 9788575226930"
+                    value={isbn}
+                    onChange={(e) => setIsbn(e.target.value)}
+                    className={inputCls}
+                  />
+                </Field>
+              </div>
+              <button
+                type="button"
+                onClick={handleSearchISBN}
+                disabled={isSearching}
+                className={`px-3 py-2.5 rounded-xl text-sm font-semibold transition-all ${isSearching ? "bg-muted text-muted-foreground cursor-not-allowed" : "bg-primary text-primary-foreground hover:bg-destructive"}`}
+              >
+                {isSearching ? "Buscando..." : "Buscar"}
+              </button>
+            </div>
+
+            <div className="mt-4">
+              <Field label="URL da capa">
+                <input type="text" placeholder="https://..." value={form.cover} onChange={set("cover")} className={inputCls} />
+              </Field>
+              <p className="text-xs text-muted-foreground mt-1.5">Se vazio, capa padrão será usada.</p>
+            </div>
           </div>
         </div>
 
