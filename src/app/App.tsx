@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react"; //sammy
 import {
   Search, BookOpen, Star, Heart, ChevronRight, Filter, X,
   BookMarked, Plus, Upload, Pencil, CheckCheck, Menu, SlidersHorizontal,
@@ -13,6 +13,7 @@ type Book = {
   id: number; title: string; author: string; genre: string;
   year: number; rating: number; pages: number; cover: string;
   description: string; featured: boolean; tagIds: number[];
+  isRead?: boolean; isFavorite?: boolean; //sammy: passam a vir do backend, embutidos no livro
 };
 
 type View = "catalog" | "add" | "edit" | "tags";
@@ -194,6 +195,8 @@ function BookForm({ initial, onSubmit, onCancel, isEdit, tags }: {
 }) {
   const [form, setForm] = useState({ ...initial });
   const [saved, setSaved] = useState(false);
+  const [isbn, setIsbn] = useState("");
+  const [isSearching, setIsSearching] = useState(false);
 
   const set = (field: keyof typeof EMPTY_FORM) =>
     (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) => {
@@ -203,6 +206,52 @@ function BookForm({ initial, onSubmit, onCancel, isEdit, tags }: {
 
   const toggleTag = (id: number) =>
     setForm((f) => ({ ...f, tagIds: f.tagIds.includes(id) ? f.tagIds.filter((x) => x !== id) : [...f.tagIds, id] }));
+
+  // Busca de dados via Open Library
+  const handleSearchISBN = async () => {
+    const normalizedIsbn = isbn.trim().replace(/-/g, "");
+
+    if (!normalizedIsbn) {
+      window.alert("Informe um ISBN para buscar os dados.");
+      return;
+    }
+
+    try {
+      setIsSearching(true);
+      const response = await fetch(`https://openlibrary.org/api/books?bibkeys=ISBN:${normalizedIsbn}&format=json&jscmd=data`);
+
+      if (!response.ok) throw new Error("Falha ao buscar dados do ISBN");
+
+      const data = await response.json();
+      const bookData = data[`ISBN:${normalizedIsbn}`];
+
+      if (!bookData) throw new Error("ISBN não encontrado");
+
+      const authors = Array.isArray(bookData.authors)
+        ? bookData.authors.map((author: { name?: string }) => author?.name).filter(Boolean).join(", ")
+        : "";
+
+      const publishYear = typeof bookData.publish_date === "string"
+        ? Number(bookData.publish_date.match(/\d{4}/)?.[0] || 0)
+        : 0;
+
+      setForm((prev) => ({
+        ...prev,
+        title: bookData.title || prev.title,
+        author: authors || prev.author,
+        year: publishYear || prev.year,
+        pages: typeof bookData.number_of_pages === "number" ? bookData.number_of_pages : prev.pages,
+        cover: bookData.cover?.large || bookData.cover?.medium || bookData.cover?.small || prev.cover,
+      }));
+
+      setIsbn("");
+    } catch (error) {
+      setIsbn("");
+      window.alert("Não foi possível encontrar os dados para este ISBN. Verifique o número e tente novamente.");
+    } finally {
+      setIsSearching(false);
+    }
+  };
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -228,10 +277,35 @@ function BookForm({ initial, onSubmit, onCancel, isEdit, tags }: {
             }
           </div>
           <div className="flex-1 min-w-0">
-            <Field label="URL da capa">
-              <input type="text" placeholder="https://..." value={form.cover} onChange={set("cover")} className={inputCls} />
-            </Field>
-            <p className="text-xs text-muted-foreground mt-1.5">Se vazio, capa padrão será usada.</p>
+            {/* Novo bloco de busca por ISBN */}
+            <div className="flex gap-2 items-end">
+              <div className="flex-1">
+                <Field label="ISBN">
+                  <input
+                    type="text"
+                    placeholder="Ex: 9788575226930"
+                    value={isbn}
+                    onChange={(e) => setIsbn(e.target.value)}
+                    className={inputCls}
+                  />
+                </Field>
+              </div>
+              <button
+                type="button"
+                onClick={handleSearchISBN}
+                disabled={isSearching}
+                className={`px-3 py-2.5 rounded-xl text-sm font-semibold transition-all ${isSearching ? "bg-muted text-muted-foreground cursor-not-allowed" : "bg-primary text-primary-foreground hover:bg-destructive"}`}
+              >
+                {isSearching ? "Buscando..." : "Buscar"}
+              </button>
+            </div>
+
+            <div className="mt-4">
+              <Field label="URL da capa">
+                <input type="text" placeholder="https://..." value={form.cover} onChange={set("cover")} className={inputCls} />
+              </Field>
+              <p className="text-xs text-muted-foreground mt-1.5">Se vazio, capa padrão será usada.</p>
+            </div>
           </div>
         </div>
 
@@ -327,7 +401,7 @@ function BookForm({ initial, onSubmit, onCancel, isEdit, tags }: {
 
 // ── Tags management page ────────────────────────────────────────────────────
 
-function TagsPage({ tags, setTags, books }: { tags: TagDef[]; setTags: React.Dispatch<React.SetStateAction<TagDef[]>>; books: Book[] }) {
+function TagsPage({ tags, books, onReload }: { tags: TagDef[]; books: Book[]; onReload: () => Promise<void> }) { //sammy: setTags trocado por onReload (persistência via backend)
   const [name, setName] = useState("");
   const [color, setColor] = useState(TAG_COLORS[0].value);
   const [editId, setEditId] = useState<number | null>(null);
@@ -336,23 +410,31 @@ function TagsPage({ tags, setTags, books }: { tags: TagDef[]; setTags: React.Dis
 
   const usageCount = (id: number) => books.filter((b) => b.tagIds.includes(id)).length;
 
-  const handleCreate = (e: React.FormEvent) => {
+  //sammy: agora grava no backend e recarrega, em vez de só atualizar o estado local
+  const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!name.trim()) return;
-    setTags((prev) => [...prev, { id: Date.now(), name: name.trim(), color }]);
+    await window.api.tags.add({ name: name.trim(), color }); //sammy
+    await onReload(); //sammy
     setName("");
     setColor(TAG_COLORS[0].value);
   };
 
   const startEdit = (tag: TagDef) => { setEditId(tag.id); setEditName(tag.name); setEditColor(tag.color); };
 
-  const saveEdit = () => {
-    if (!editName.trim()) return;
-    setTags((prev) => prev.map((t) => t.id === editId ? { ...t, name: editName.trim(), color: editColor } : t));
+  //sammy: idem, persiste no backend
+  const saveEdit = async () => {
+    if (!editName.trim() || editId === null) return;
+    await window.api.tags.update(editId, { name: editName.trim(), color: editColor }); //sammy
+    await onReload(); //sammy
     setEditId(null);
   };
 
-  const deleteTag = (id: number) => setTags((prev) => prev.filter((t) => t.id !== id));
+  //sammy: idem
+  const deleteTag = async (id: number) => {
+    await window.api.tags.delete(id); //sammy
+    await onReload(); //sammy
+  };
 
   return (
     <div className="max-w-2xl mx-auto px-4 sm:px-6 py-6 sm:py-8">
@@ -507,18 +589,34 @@ function TagsPage({ tags, setTags, books }: { tags: TagDef[]; setTags: React.Dis
 // ── Main App ────────────────────────────────────────────────────────────────
 
 export default function App() {
-  const [books, setBooks] = useState<Book[]>(INITIAL_BOOKS);
-  const [tags, setTags] = useState<TagDef[]>(INITIAL_TAGS);
+  const [books, setBooks] = useState<Book[]>([]); //sammy: passa a carregar do backend em vez de INITIAL_BOOKS
+  const [tags, setTags] = useState<TagDef[]>([]); //sammy: passa a carregar do backend em vez de INITIAL_TAGS
+  const [loading, setLoading] = useState(true); //sammy
   const [search, setSearch] = useState("");
   const [selectedGenre, setSelectedGenre] = useState("Todos");
   const [selectedTagId, setSelectedTagId] = useState<number | null>(null);
   const [readFilter, setReadFilter] = useState<ReadFilter>("todos");
   const [selectedBook, setSelectedBook] = useState<Book | null>(null);
-  const [favorites, setFavorites] = useState<number[]>([]);
-  const [readBooks, setReadBooks] = useState<number[]>([]);
   const [view, setView] = useState<View>("catalog");
   const [editingBook, setEditingBook] = useState<Book | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
+
+  //sammy: favoritos e lidos agora vêm do backend, embutidos em cada livro
+  // (book.isFavorite / book.isRead), então derivamos as listas de ids aqui
+  // pra manter o resto do componente exatamente como já era.
+  const favorites = useMemo(() => books.filter((b) => b.isFavorite).map((b) => b.id), [books]); //sammy
+  const readBooks = useMemo(() => books.filter((b) => b.isRead).map((b) => b.id), [books]); //sammy
+
+  const reloadBooks = async () => setBooks(await window.api.books.getAll()); //sammy
+  const reloadTags = async () => setTags(await window.api.tags.getAll()); //sammy
+
+  //sammy: carrega os dados do backend ao montar o app
+  useEffect(() => {
+    (async () => {
+      await Promise.all([reloadBooks(), reloadTags()]);
+      setLoading(false);
+    })();
+  }, []); //sammy
 
   const filtered = useMemo(() => {
     return books.filter((b) => {
@@ -532,21 +630,42 @@ export default function App() {
 
   const featured = books.filter((b) => b.featured);
 
-  const toggleFav = (id: number) => setFavorites((f) => (f.includes(id) ? f.filter((x) => x !== id) : [...f, id]));
-  const toggleRead = (id: number) => setReadBooks((r) => (r.includes(id) ? r.filter((x) => x !== id) : [...r, id]));
+  //sammy: atualização otimista + persistência no backend
+  const toggleFav = async (id: number) => {
+    setBooks((prev) => prev.map((b) => b.id === id ? { ...b, isFavorite: !b.isFavorite } : b)); //sammy
+    await window.api.books.toggleFavorite(id); //sammy
+  };
 
-  const handleAdd = (data: typeof EMPTY_FORM) => {
-    setBooks((prev) => [{ ...data, id: Date.now(), cover: data.cover || "https://images.unsplash.com/photo-1544947950-fa07a98d237f?w=300&h=420&fit=crop&auto=format" }, ...prev]);
+  //sammy: idem
+  const toggleRead = async (id: number) => {
+    setBooks((prev) => prev.map((b) => b.id === id ? { ...b, isRead: !b.isRead } : b)); //sammy
+    await window.api.books.toggleRead(id); //sammy
+  };
+
+  //sammy: grava no backend e recarrega
+  const handleAdd = async (data: typeof EMPTY_FORM) => {
+    await window.api.books.add({
+      ...data,
+      cover: data.cover || "https://images.unsplash.com/photo-1544947950-fa07a98d237f?w=300&h=420&fit=crop&auto=format",
+    }); //sammy
+    await reloadBooks(); //sammy
     setView("catalog");
   };
 
-  const handleEdit = (data: typeof EMPTY_FORM) => {
+  //sammy: idem
+  const handleEdit = async (data: typeof EMPTY_FORM) => {
     if (!editingBook) return;
-    const updated = { ...editingBook, ...data, cover: data.cover || editingBook.cover };
-    setBooks((prev) => prev.map((b) => b.id === editingBook.id ? updated : b));
-    setSelectedBook((sel) => sel?.id === editingBook.id ? updated : sel);
+    await window.api.books.update(editingBook.id, { ...data, cover: data.cover || editingBook.cover }); //sammy
+    await reloadBooks(); //sammy
     setEditingBook(null);
     setView("catalog");
+  };
+
+  //sammy: nova função — exclusão de livro (não existia no original)
+  const handleDelete = async (id: number) => {
+    await window.api.books.delete(id);
+    setSelectedBook(null);
+    await reloadBooks();
   };
 
   const openEdit = (book: Book) => { setEditingBook(book); setSelectedBook(null); setView("edit"); };
@@ -562,6 +681,15 @@ export default function App() {
       <span className="hidden sm:inline">{label}</span>
     </button>
   );
+
+  //sammy: tela de carregamento enquanto busca livros/tags do backend
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center" style={{ fontFamily: "'Nunito', sans-serif" }}>
+        <p className="text-sm text-muted-foreground">Carregando biblioteca...</p>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-background flex flex-col" style={{ fontFamily: "'Nunito', sans-serif" }}>
@@ -750,7 +878,7 @@ export default function App() {
             />
           )}
 
-          {view === "tags" && <TagsPage tags={tags} setTags={setTags} books={books} />}
+          {view === "tags" && <TagsPage tags={tags} books={books} onReload={async () => { await reloadTags(); await reloadBooks(); }} />} {/* sammy */}
         </main>
       </div>
 
@@ -806,6 +934,13 @@ export default function App() {
                     </button>
                     <button onClick={() => openEdit(selectedBook)} className="flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-xl bg-accent hover:bg-secondary transition-colors text-sm font-semibold text-foreground">
                       <Pencil size={13} /> Editar
+                    </button>
+                    {/* sammy: novo botão de excluir livro */}
+                    <button
+                      onClick={() => { if (confirm(`Excluir "${selectedBook.title}"?`)) handleDelete(selectedBook.id); }}
+                      className="flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-xl bg-destructive/10 hover:bg-destructive/20 transition-colors text-sm font-semibold text-destructive"
+                    >
+                      <Trash2 size={13} />
                     </button>
                   </div>
                 </div>
