@@ -1,8 +1,8 @@
-import { useState, useMemo, useEffect } from "react"; //sammy
+import { useState, useMemo, useEffect, useCallback } from "react"; //sammy
 import {
   Search, BookOpen, Star, Heart, ChevronRight, Filter, X,
   BookMarked, Plus, Upload, Pencil, CheckCheck, Menu, SlidersHorizontal,
-  Tag, Trash2,
+  Tag, Trash2, AlertCircle, CheckCircle2, Info,
 } from "lucide-react";
 
 // ── Types ──────────────────────────────────────────────────────────────────
@@ -13,11 +13,12 @@ type Book = {
   id: number; title: string; author: string; genre: string;
   year: number; rating: number; pages: number; cover: string;
   description: string; featured: boolean; tagIds: number[];
-  isRead?: boolean; isFavorite?: boolean; //sammy: passam a vir do backend, embutidos no livro
+  isRead?: boolean; isFavorite?: boolean;
 };
 
 type View = "catalog" | "add" | "edit" | "tags";
 type ReadFilter = "todos" | "lidos" | "nao-lidos";
+type ToastData = { message: string; type: "success" | "error" | "info" };
 
 // ── Constants ──────────────────────────────────────────────────────────────
 
@@ -33,23 +34,6 @@ const TAG_COLORS = [
 ];
 
 const GENRES = ["Todos", "Romance", "Realismo Mágico", "Mistério", "Ficção", "Fantasia", "Ficção Clássica", "Poesia", "Biografia", "Outros"];
-
-const INITIAL_TAGS: TagDef[] = [
-  { id: 1, name: "Favorito", color: "#c0152a" },
-  { id: 2, name: "Para reler", color: "#5b8db8" },
-  { id: 3, name: "Clássico", color: "#8c6a58" },
-];
-
-const INITIAL_BOOKS: Book[] = [
-  { id: 1, title: "A Casa dos Espíritos", author: "Isabel Allende", genre: "Romance", year: 1982, rating: 4.8, pages: 432, cover: "https://images.unsplash.com/photo-1544947950-fa07a98d237f?w=300&h=420&fit=crop&auto=format", description: "Uma saga familiar que atravessa quatro gerações no Chile, entre amor, magia e política.", featured: true, tagIds: [1, 3] },
-  { id: 2, title: "Cem Anos de Solidão", author: "Gabriel García Márquez", genre: "Realismo Mágico", year: 1967, rating: 4.9, pages: 448, cover: "https://images.unsplash.com/photo-1512820790803-83ca734da794?w=300&h=420&fit=crop&auto=format", description: "A história da família Buendía e da cidade de Macondo, obra-prima do realismo mágico.", featured: true, tagIds: [3] },
-  { id: 3, title: "O Nome da Rosa", author: "Umberto Eco", genre: "Mistério", year: 1980, rating: 4.6, pages: 502, cover: "https://images.unsplash.com/photo-1481627834876-b7833e8f5570?w=300&h=420&fit=crop&auto=format", description: "Um monge investiga uma série de mortes misteriosas em uma abadia medieval italiana.", featured: false, tagIds: [] },
-  { id: 4, title: "Persuasão", author: "Jane Austen", genre: "Romance", year: 1817, rating: 4.7, pages: 254, cover: "https://images.unsplash.com/photo-1524995997946-a1c2e315a42f?w=300&h=420&fit=crop&auto=format", description: "Anne Elliot reencontra o capitão Wentworth, um amor que foi persuadida a rejeitar.", featured: false, tagIds: [2] },
-  { id: 5, title: "Dom Casmurro", author: "Machado de Assis", genre: "Ficção", year: 1899, rating: 4.5, pages: 256, cover: "https://images.unsplash.com/photo-1497633762265-9d179a990aa6?w=300&h=420&fit=crop&auto=format", description: "Bentinho narra sua vida e questiona a fidelidade de Capitu, em um clássico da literatura brasileira.", featured: false, tagIds: [3] },
-  { id: 6, title: "O Senhor dos Anéis", author: "J.R.R. Tolkien", genre: "Fantasia", year: 1954, rating: 4.9, pages: 1178, cover: "https://images.unsplash.com/photo-1516979187457-637abb4f9353?w=300&h=420&fit=crop&auto=format", description: "A épica jornada de Frodo para destruir o Um Anel e salvar a Terra-Média.", featured: true, tagIds: [1, 2] },
-  { id: 7, title: "Orgulho e Preconceito", author: "Jane Austen", genre: "Romance", year: 1813, rating: 4.8, pages: 432, cover: "https://images.unsplash.com/photo-1589998059171-988d887df646?w=300&h=420&fit=crop&auto=format", description: "Elizabeth Bennet e Mr. Darcy navegam entre orgulho, preconceito e amor verdadeiro.", featured: false, tagIds: [] },
-  { id: 8, title: "Crime e Castigo", author: "Fiódor Dostoiévski", genre: "Ficção Clássica", year: 1866, rating: 4.7, pages: 671, cover: "https://images.unsplash.com/photo-1491841550275-ad7854e35ca6?w=300&h=420&fit=crop&auto=format", description: "Raskólnikov comete um crime e enfrenta o peso psicológico da culpa e da redenção.", featured: false, tagIds: [3] },
-];
 
 const EMPTY_FORM = {
   title: "", author: "", genre: "Romance",
@@ -87,6 +71,72 @@ function TagChip({ tag, onRemove, small }: { tag: TagDef; onRemove?: () => void;
 }
 
 const inputCls = "w-full bg-background border border-border rounded-xl px-3.5 py-2.5 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary transition-all";
+
+// ── Toast component ─────────────────────────────────────────────────────────
+
+function Toast({ toast, onClose }: { toast: ToastData; onClose: () => void }) {
+  useEffect(() => {
+    const timer = setTimeout(onClose, 4000);
+    return () => clearTimeout(timer);
+  }, [onClose]);
+
+  const iconMap = {
+    success: <CheckCircle2 size={18} className="shrink-0" />,
+    error: <AlertCircle size={18} className="shrink-0" />,
+    info: <Info size={18} className="shrink-0" />,
+  };
+
+  const colorMap = {
+    success: "border-green-500 bg-green-50 text-green-800",
+    error: "border-destructive bg-destructive/10 text-destructive",
+    info: "border-primary bg-primary/10 text-primary",
+  };
+
+  return (
+    <div
+      className={`fixed bottom-6 right-6 z-[100] flex items-center gap-3 px-4 py-3 rounded-xl border shadow-lg backdrop-blur-sm ${colorMap[toast.type]}`}
+      style={{ fontFamily: "'Nunito', sans-serif", animation: "slideUp 0.3s ease-out" }}
+    >
+      {iconMap[toast.type]}
+      <span className="text-sm font-semibold">{toast.message}</span>
+      <button onClick={onClose} className="ml-2 opacity-60 hover:opacity-100 transition-opacity">
+        <X size={14} />
+      </button>
+    </div>
+  );
+}
+
+// ── ConfirmDialog component ─────────────────────────────────────────────────
+
+function ConfirmDialog({ message, onConfirm, onCancel }: { message: string; onConfirm: () => void; onCancel: () => void }) {
+  useEffect(() => {
+    const handleEsc = (e: KeyboardEvent) => { if (e.key === "Escape") onCancel(); };
+    window.addEventListener("keydown", handleEsc);
+    return () => window.removeEventListener("keydown", handleEsc);
+  }, [onCancel]);
+
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center" onClick={onCancel}>
+      <div className="absolute inset-0 bg-foreground/40 backdrop-blur-sm" />
+      <div className="relative bg-card border border-border rounded-2xl shadow-2xl p-6 max-w-sm w-full mx-4" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center gap-3 mb-4">
+          <div className="w-10 h-10 rounded-full bg-destructive/10 flex items-center justify-center shrink-0">
+            <AlertCircle size={20} className="text-destructive" />
+          </div>
+          <p className="text-sm font-semibold text-foreground leading-relaxed">{message}</p>
+        </div>
+        <div className="flex gap-3 justify-end">
+          <button onClick={onCancel} className="px-4 py-2 rounded-xl text-sm font-semibold text-muted-foreground hover:text-foreground hover:bg-accent transition-all">
+            Cancelar
+          </button>
+          <button onClick={onConfirm} className="px-4 py-2 rounded-xl text-sm font-semibold bg-destructive text-white hover:bg-destructive/90 transition-all">
+            Excluir
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 // ── Sidebar content ─────────────────────────────────────────────────────────
 
@@ -186,12 +236,13 @@ function SidebarContent({
 
 // ── Book form ───────────────────────────────────────────────────────────────
 
-function BookForm({ initial, onSubmit, onCancel, isEdit, tags }: {
+function BookForm({ initial, onSubmit, onCancel, isEdit, tags, onToast }: {
   initial: typeof EMPTY_FORM;
   onSubmit: (data: typeof EMPTY_FORM) => void;
   onCancel: () => void;
   isEdit: boolean;
   tags: TagDef[];
+  onToast: (msg: string, type: ToastData["type"]) => void;
 }) {
   const [form, setForm] = useState({ ...initial });
   const [saved, setSaved] = useState(false);
@@ -212,7 +263,7 @@ function BookForm({ initial, onSubmit, onCancel, isEdit, tags }: {
     const normalizedIsbn = isbn.trim().replace(/-/g, "");
 
     if (!normalizedIsbn) {
-      window.alert("Informe um ISBN para buscar os dados.");
+      onToast("Informe um ISBN para buscar os dados no Bi-Bip Biblioteca Privada.", "info");
       return;
     }
 
@@ -245,7 +296,6 @@ function BookForm({ initial, onSubmit, onCancel, isEdit, tags }: {
 
       if ((needsAuthorFallback || needsDescriptionFallback) && bookTitle) {
         try {
-          // 1ª requisição: buscar o título na Wikipedia
           const searchRes = await fetch(
             `https://pt.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(bookTitle + " livro")}&format=json&origin=*`
           );
@@ -253,7 +303,6 @@ function BookForm({ initial, onSubmit, onCancel, isEdit, tags }: {
           const firstResult = searchData?.query?.search?.[0];
 
           if (firstResult?.title) {
-            // 2ª requisição: obter o resumo (extract)
             const extractRes = await fetch(
               `https://pt.wikipedia.org/w/api.php?action=query&prop=extracts&exintro=1&explaintext=1&titles=${encodeURIComponent(firstResult.title)}&format=json&origin=*`
             );
@@ -267,7 +316,7 @@ function BookForm({ initial, onSubmit, onCancel, isEdit, tags }: {
             }
           }
         } catch {
-          // Fallback silencioso — se a Wikipedia falhar, apenas mantém os dados originais
+          // Fallback silencioso
         }
       }
 
@@ -282,9 +331,10 @@ function BookForm({ initial, onSubmit, onCancel, isEdit, tags }: {
       }));
 
       setIsbn("");
+      onToast(`Dados do ISBN carregados com sucesso no Bi-Bip!`, "success");
     } catch (error) {
       setIsbn("");
-      window.alert("Não foi possível encontrar os dados para este ISBN. Verifique o número e tente novamente.");
+      onToast("ISBN não encontrado no Bi-Bip Biblioteca Privada. Verifique o número e tente novamente.", "error");
     } finally {
       setIsSearching(false);
     }
@@ -314,7 +364,6 @@ function BookForm({ initial, onSubmit, onCancel, isEdit, tags }: {
             }
           </div>
           <div className="flex-1 min-w-0">
-            {/* Novo bloco de busca por ISBN */}
             <div className="flex gap-2 items-end">
               <div className="flex-1">
                 <Field label="ISBN">
@@ -444,7 +493,7 @@ function BookForm({ initial, onSubmit, onCancel, isEdit, tags }: {
 
 // ── Tags management page ────────────────────────────────────────────────────
 
-function TagsPage({ tags, books, onReload }: { tags: TagDef[]; books: Book[]; onReload: () => Promise<void> }) { //sammy: setTags trocado por onReload (persistência via backend)
+function TagsPage({ tags, books, onReload }: { tags: TagDef[]; books: Book[]; onReload: () => Promise<void> }) {
   const [name, setName] = useState("");
   const [color, setColor] = useState(TAG_COLORS[0].value);
   const [editId, setEditId] = useState<number | null>(null);
@@ -453,30 +502,27 @@ function TagsPage({ tags, books, onReload }: { tags: TagDef[]; books: Book[]; on
 
   const usageCount = (id: number) => books.filter((b) => b.tagIds.includes(id)).length;
 
-  //sammy: agora grava no backend e recarrega, em vez de só atualizar o estado local
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!name.trim()) return;
-    await window.api.tags.add({ name: name.trim(), color }); //sammy
-    await onReload(); //sammy
+    await window.api.tags.add({ name: name.trim(), color });
+    await onReload();
     setName("");
     setColor(TAG_COLORS[0].value);
   };
 
   const startEdit = (tag: TagDef) => { setEditId(tag.id); setEditName(tag.name); setEditColor(tag.color); };
 
-  //sammy: idem, persiste no backend
   const saveEdit = async () => {
     if (!editName.trim() || editId === null) return;
-    await window.api.tags.update(editId, { name: editName.trim(), color: editColor }); //sammy
-    await onReload(); //sammy
+    await window.api.tags.update(editId, { name: editName.trim(), color: editColor });
+    await onReload();
     setEditId(null);
   };
 
-  //sammy: idem
   const deleteTag = async (id: number) => {
-    await window.api.tags.delete(id); //sammy
-    await onReload(); //sammy
+    await window.api.tags.delete(id);
+    await onReload();
   };
 
   return (
@@ -488,7 +534,6 @@ function TagsPage({ tags, books, onReload }: { tags: TagDef[]; books: Book[]; on
         <p className="text-sm text-muted-foreground">Crie e organize tags para classificar seus livros.</p>
       </div>
 
-      {/* Create form */}
       <div className="bg-card border border-border rounded-2xl p-4 sm:p-5 mb-6">
         <p className="text-xs font-semibold text-muted-foreground uppercase tracking-widest mb-4" style={{ fontFamily: "'DM Mono', monospace" }}>
           Nova tag
@@ -531,7 +576,6 @@ function TagsPage({ tags, books, onReload }: { tags: TagDef[]; books: Book[]; on
                   style={{ backgroundColor: c.value, borderColor: color === c.value ? "#2d1a0e" : "transparent", boxShadow: color === c.value ? "0 0 0 2px white inset" : "none" }}
                 />
               ))}
-              {/* Custom color */}
               <label className="w-7 h-7 rounded-full border-2 border-dashed border-border flex items-center justify-center cursor-pointer hover:scale-110 transition-all overflow-hidden" title="Cor personalizada">
                 <input type="color" value={color} onChange={(e) => setColor(e.target.value)} className="opacity-0 absolute w-px h-px" />
                 <span className="w-4 h-4 rounded-full" style={{ backgroundColor: color }} />
@@ -539,7 +583,6 @@ function TagsPage({ tags, books, onReload }: { tags: TagDef[]; books: Book[]; on
             </div>
           </div>
 
-          {/* Preview */}
           {name && (
             <div className="flex items-center gap-2">
               <span className="text-xs text-muted-foreground">Prévia:</span>
@@ -549,7 +592,6 @@ function TagsPage({ tags, books, onReload }: { tags: TagDef[]; books: Book[]; on
         </form>
       </div>
 
-      {/* Existing tags */}
       {tags.length === 0 ? (
         <div className="text-center py-12 text-muted-foreground">
           <Tag size={32} className="mx-auto mb-3 opacity-30" />
@@ -606,16 +648,10 @@ function TagsPage({ tags, books, onReload }: { tags: TagDef[]; books: Book[]; on
                     </span>
                   </div>
                   <div className="flex items-center gap-1 shrink-0">
-                    <button
-                      onClick={() => startEdit(tag)}
-                      className="p-2 rounded-lg text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
-                    >
+                    <button onClick={() => startEdit(tag)} className="p-2 rounded-lg text-muted-foreground hover:text-foreground hover:bg-accent transition-colors">
                       <Pencil size={14} />
                     </button>
-                    <button
-                      onClick={() => deleteTag(tag.id)}
-                      className="p-2 rounded-lg text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors"
-                    >
+                    <button onClick={() => deleteTag(tag.id)} className="p-2 rounded-lg text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors">
                       <Trash2 size={14} />
                     </button>
                   </div>
@@ -632,9 +668,9 @@ function TagsPage({ tags, books, onReload }: { tags: TagDef[]; books: Book[]; on
 // ── Main App ────────────────────────────────────────────────────────────────
 
 export default function App() {
-  const [books, setBooks] = useState<Book[]>([]); //sammy: passa a carregar do backend em vez de INITIAL_BOOKS
-  const [tags, setTags] = useState<TagDef[]>([]); //sammy: passa a carregar do backend em vez de INITIAL_TAGS
-  const [loading, setLoading] = useState(true); //sammy
+  const [books, setBooks] = useState<Book[]>([]);
+  const [tags, setTags] = useState<TagDef[]>([]);
+  const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [selectedGenre, setSelectedGenre] = useState("Todos");
   const [selectedTagId, setSelectedTagId] = useState<number | null>(null);
@@ -644,22 +680,27 @@ export default function App() {
   const [editingBook, setEditingBook] = useState<Book | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
 
-  //sammy: favoritos e lidos agora vêm do backend, embutidos em cada livro
-  // (book.isFavorite / book.isRead), então derivamos as listas de ids aqui
-  // pra manter o resto do componente exatamente como já era.
-  const favorites = useMemo(() => books.filter((b) => b.isFavorite).map((b) => b.id), [books]); //sammy
-  const readBooks = useMemo(() => books.filter((b) => b.isRead).map((b) => b.id), [books]); //sammy
+  // Toast state
+  const [toast, setToast] = useState<ToastData | null>(null);
+  const showToast = useCallback((message: string, type: ToastData["type"]) => {
+    setToast({ message, type });
+  }, []);
 
-  const reloadBooks = async () => setBooks(await window.api.books.getAll()); //sammy
-  const reloadTags = async () => setTags(await window.api.tags.getAll()); //sammy
+  // Confirm delete dialog state
+  const [confirmDelete, setConfirmDelete] = useState<Book | null>(null);
 
-  //sammy: carrega os dados do backend ao montar o app
+  const favorites = useMemo(() => books.filter((b) => b.isFavorite).map((b) => b.id), [books]);
+  const readBooks = useMemo(() => books.filter((b) => b.isRead).map((b) => b.id), [books]);
+
+  const reloadBooks = async () => setBooks(await window.api.books.getAll());
+  const reloadTags = async () => setTags(await window.api.tags.getAll());
+
   useEffect(() => {
     (async () => {
       await Promise.all([reloadBooks(), reloadTags()]);
       setLoading(false);
     })();
-  }, []); //sammy
+  }, []);
 
   const filtered = useMemo(() => {
     return books.filter((b) => {
@@ -673,42 +714,41 @@ export default function App() {
 
   const featured = books.filter((b) => b.featured);
 
-  //sammy: atualização otimista + persistência no backend
   const toggleFav = async (id: number) => {
-    setBooks((prev) => prev.map((b) => b.id === id ? { ...b, isFavorite: !b.isFavorite } : b)); //sammy
-    await window.api.books.toggleFavorite(id); //sammy
+    setBooks((prev) => prev.map((b) => b.id === id ? { ...b, isFavorite: !b.isFavorite } : b));
+    await window.api.books.toggleFavorite(id);
   };
 
-  //sammy: idem
   const toggleRead = async (id: number) => {
-    setBooks((prev) => prev.map((b) => b.id === id ? { ...b, isRead: !b.isRead } : b)); //sammy
-    await window.api.books.toggleRead(id); //sammy
+    setBooks((prev) => prev.map((b) => b.id === id ? { ...b, isRead: !b.isRead } : b));
+    await window.api.books.toggleRead(id);
   };
 
-  //sammy: grava no backend e recarrega
   const handleAdd = async (data: typeof EMPTY_FORM) => {
     await window.api.books.add({
       ...data,
       cover: data.cover || "https://images.unsplash.com/photo-1544947950-fa07a98d237f?w=300&h=420&fit=crop&auto=format",
-    }); //sammy
-    await reloadBooks(); //sammy
+    });
+    await reloadBooks();
     setView("catalog");
+    showToast("Livro cadastrado com sucesso no Bi-Bip!", "success");
   };
 
-  //sammy: idem
   const handleEdit = async (data: typeof EMPTY_FORM) => {
     if (!editingBook) return;
-    await window.api.books.update(editingBook.id, { ...data, cover: data.cover || editingBook.cover }); //sammy
-    await reloadBooks(); //sammy
+    await window.api.books.update(editingBook.id, { ...data, cover: data.cover || editingBook.cover });
+    await reloadBooks();
     setEditingBook(null);
     setView("catalog");
+    showToast("Livro atualizado com sucesso no Bi-Bip!", "success");
   };
 
-  //sammy: nova função — exclusão de livro (não existia no original)
   const handleDelete = async (id: number) => {
     await window.api.books.delete(id);
     setSelectedBook(null);
+    setConfirmDelete(null);
     await reloadBooks();
+    showToast("Livro removido do acervo do Bi-Bip.", "info");
   };
 
   const openEdit = (book: Book) => { setEditingBook(book); setSelectedBook(null); setView("edit"); };
@@ -725,7 +765,6 @@ export default function App() {
     </button>
   );
 
-  //sammy: tela de carregamento enquanto busca livros/tags do backend
   if (loading) {
     return (
       <div className="min-h-screen bg-background flex items-center justify-center" style={{ fontFamily: "'Nunito', sans-serif" }}>
@@ -802,7 +841,6 @@ export default function App() {
           {/* ── Catalog ── */}
           {view === "catalog" && (
             <div className="px-4 sm:px-6 py-4 sm:py-6">
-              {/* Active filter chips (mobile) */}
               {(selectedGenre !== "Todos" || readFilter !== "todos" || search || selectedTagId !== null) && (
                 <div className="md:hidden flex flex-wrap gap-2 mb-4">
                   {search && <span className="flex items-center gap-1 bg-primary/10 text-primary text-xs px-2.5 py-1 rounded-full font-medium">"{search}"<button onClick={() => setSearch("")}><X size={10} /></button></span>}
@@ -812,7 +850,6 @@ export default function App() {
                 </div>
               )}
 
-              {/* Featured */}
               {search === "" && selectedGenre === "Todos" && readFilter === "todos" && selectedTagId === null && (
                 <section className="mb-6 sm:mb-8">
                   <div className="flex items-center gap-2 mb-3">
@@ -839,7 +876,6 @@ export default function App() {
                 </section>
               )}
 
-              {/* Grid */}
               <div>
                 <div className="flex items-center justify-between mb-3 sm:mb-4">
                   <div className="flex items-center gap-2">
@@ -909,19 +945,40 @@ export default function App() {
             </div>
           )}
 
-          {view === "add" && <BookForm initial={EMPTY_FORM} onSubmit={handleAdd} onCancel={() => setView("catalog")} isEdit={false} tags={tags} />}
+          {view === "add" && (
+            <BookForm
+              initial={EMPTY_FORM}
+              onSubmit={handleAdd}
+              onCancel={() => setView("catalog")}
+              isEdit={false}
+              tags={tags}
+              onToast={showToast}
+            />
+          )}
 
           {view === "edit" && editingBook && (
             <BookForm
-              initial={{ title: editingBook.title, author: editingBook.author, genre: editingBook.genre, year: editingBook.year, rating: editingBook.rating, pages: editingBook.pages, cover: editingBook.cover, description: editingBook.description, featured: editingBook.featured, tagIds: editingBook.tagIds }}
+              initial={{
+                title: editingBook.title,
+                author: editingBook.author,
+                genre: editingBook.genre,
+                year: String(editingBook.year),
+                rating: String(editingBook.rating),
+                pages: String(editingBook.pages),
+                cover: editingBook.cover,
+                description: editingBook.description,
+                featured: editingBook.featured,
+                tagIds: editingBook.tagIds,
+              }}
               onSubmit={handleEdit}
               onCancel={() => { setView("catalog"); setEditingBook(null); }}
               isEdit={true}
               tags={tags}
+              onToast={showToast}
             />
           )}
 
-          {view === "tags" && <TagsPage tags={tags} books={books} onReload={async () => { await reloadTags(); await reloadBooks(); }} />} {/* sammy */}
+          {view === "tags" && <TagsPage tags={tags} books={books} onReload={async () => { await reloadTags(); await reloadBooks(); }} />}
         </main>
       </div>
 
@@ -947,7 +1004,6 @@ export default function App() {
                   <p className="text-sm text-muted-foreground mt-0.5">{selectedBook.author}</p>
                 </div>
 
-                {/* Tags no modal */}
                 {selectedBook.tagIds.length > 0 && (
                   <div className="flex flex-wrap gap-1.5">
                     {tags.filter((t) => selectedBook.tagIds.includes(t.id)).map((tag) => (
@@ -978,9 +1034,8 @@ export default function App() {
                     <button onClick={() => openEdit(selectedBook)} className="flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-xl bg-accent hover:bg-secondary transition-colors text-sm font-semibold text-foreground">
                       <Pencil size={13} /> Editar
                     </button>
-                    {/* sammy: novo botão de excluir livro */}
                     <button
-                      onClick={() => { if (confirm(`Excluir "${selectedBook.title}"?`)) handleDelete(selectedBook.id); }}
+                      onClick={() => setConfirmDelete(selectedBook)}
                       className="flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-xl bg-destructive/10 hover:bg-destructive/20 transition-colors text-sm font-semibold text-destructive"
                     >
                       <Trash2 size={13} />
@@ -992,6 +1047,26 @@ export default function App() {
           </div>
         </div>
       )}
+
+      {/* Toast notification */}
+      {toast && <Toast toast={toast} onClose={() => setToast(null)} />}
+
+      {/* Confirm delete dialog */}
+      {confirmDelete && (
+        <ConfirmDialog
+          message={`Tem certeza que deseja excluir "${confirmDelete.title}" do acervo do Bi-Bip?`}
+          onConfirm={() => handleDelete(confirmDelete.id)}
+          onCancel={() => setConfirmDelete(null)}
+        />
+      )}
+
+      {/* Inject animation keyframes */}
+      <style>{`
+        @keyframes slideUp {
+          from { opacity: 0; transform: translateY(20px); }
+          to { opacity: 1; transform: translateY(0); }
+        }
+      `}</style>
     </div>
   );
 }
