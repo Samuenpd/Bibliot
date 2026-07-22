@@ -53,7 +53,7 @@ const INITIAL_BOOKS: Book[] = [
 
 const EMPTY_FORM = {
   title: "", author: "", genre: "Romance",
-  year: new Date().getFullYear(), rating: 4.5, pages: 0,
+  year: "", rating: "", pages: "",
   cover: "", description: "", featured: false, tagIds: [] as number[],
 };
 
@@ -200,14 +200,14 @@ function BookForm({ initial, onSubmit, onCancel, isEdit, tags }: {
 
   const set = (field: keyof typeof EMPTY_FORM) =>
     (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) => {
-      const val = e.target.type === "number" ? Number(e.target.value) : e.target.value;
+      const val = e.target.type === "number" ? (e.target.value === "" ? "" : Number(e.target.value)) : e.target.value;
       setForm((f) => ({ ...f, [field]: val }));
     };
 
   const toggleTag = (id: number) =>
     setForm((f) => ({ ...f, tagIds: f.tagIds.includes(id) ? f.tagIds.filter((x) => x !== id) : [...f.tagIds, id] }));
 
-  // Busca de dados via Open Library
+  // Busca de dados via Open Library com fallback na Wikipedia
   const handleSearchISBN = async () => {
     const normalizedIsbn = isbn.trim().replace(/-/g, "");
 
@@ -235,13 +235,50 @@ function BookForm({ initial, onSubmit, onCancel, isEdit, tags }: {
         ? Number(bookData.publish_date.match(/\d{4}/)?.[0] || 0)
         : 0;
 
+      const bookTitle = bookData.title || "";
+
+      // Fallback na Wikipedia se autor não identificado ou sem descrição
+      let wikipediaDescription = "";
+
+      const needsAuthorFallback = !authors || authors === "" || authors.toLowerCase().includes("[author not identified]");
+      const needsDescriptionFallback = !bookData.subtitle && !bookData.notes && !bookData.excerpts;
+
+      if ((needsAuthorFallback || needsDescriptionFallback) && bookTitle) {
+        try {
+          // 1ª requisição: buscar o título na Wikipedia
+          const searchRes = await fetch(
+            `https://pt.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(bookTitle + " livro")}&format=json&origin=*`
+          );
+          const searchData = await searchRes.json();
+          const firstResult = searchData?.query?.search?.[0];
+
+          if (firstResult?.title) {
+            // 2ª requisição: obter o resumo (extract)
+            const extractRes = await fetch(
+              `https://pt.wikipedia.org/w/api.php?action=query&prop=extracts&exintro=1&explaintext=1&titles=${encodeURIComponent(firstResult.title)}&format=json&origin=*`
+            );
+            const extractData = await extractRes.json();
+            const pages = extractData?.query?.pages;
+            if (pages) {
+              const page = Object.values(pages)[0] as { extract?: string } | undefined;
+              if (page?.extract) {
+                wikipediaDescription = page.extract;
+              }
+            }
+          }
+        } catch {
+          // Fallback silencioso — se a Wikipedia falhar, apenas mantém os dados originais
+        }
+      }
+
       setForm((prev) => ({
         ...prev,
-        title: bookData.title || prev.title,
-        author: authors || prev.author,
-        year: publishYear || prev.year,
-        pages: typeof bookData.number_of_pages === "number" ? bookData.number_of_pages : prev.pages,
+        title: bookTitle || prev.title,
+        author: needsAuthorFallback ? (authors || "Autor não identificado") : authors,
+        year: publishYear ? String(publishYear) : prev.year,
+        pages: typeof bookData.number_of_pages === "number" ? String(bookData.number_of_pages) : prev.pages,
         cover: bookData.cover?.large || bookData.cover?.medium || bookData.cover?.small || prev.cover,
+        description: (needsDescriptionFallback && wikipediaDescription) ? wikipediaDescription : (bookData.subtitle || prev.description || ""),
       }));
 
       setIsbn("");
@@ -286,6 +323,12 @@ function BookForm({ initial, onSubmit, onCancel, isEdit, tags }: {
                     placeholder="Ex: 9788575226930"
                     value={isbn}
                     onChange={(e) => setIsbn(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        handleSearchISBN();
+                      }
+                    }}
                     className={inputCls}
                   />
                 </Field>
@@ -324,7 +367,7 @@ function BookForm({ initial, onSubmit, onCancel, isEdit, tags }: {
             </select>
           </Field>
           <Field label="Ano">
-            <input type="number" min={0} max={new Date().getFullYear()} value={form.year} onChange={set("year")} className={inputCls} />
+            <input type="number" min={0} max={new Date().getFullYear()} value={form.year || ""} onChange={set("year")} className={inputCls} />
           </Field>
         </div>
 
@@ -333,7 +376,7 @@ function BookForm({ initial, onSubmit, onCancel, isEdit, tags }: {
             <input type="number" min={1} placeholder="ex: 320" value={form.pages || ""} onChange={set("pages")} className={inputCls} />
           </Field>
           <Field label="Avaliação (0–5)">
-            <input type="number" min={0} max={5} step={0.1} value={form.rating} onChange={set("rating")} className={inputCls} />
+            <input type="number" min={0} max={5} step={0.1} value={form.rating || ""} onChange={set("rating")} className={inputCls} />
           </Field>
         </div>
 
