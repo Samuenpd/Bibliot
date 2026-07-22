@@ -258,7 +258,37 @@ function BookForm({ initial, onSubmit, onCancel, isEdit, tags, onToast }: {
   const toggleTag = (id: number) =>
     setForm((f) => ({ ...f, tagIds: f.tagIds.includes(id) ? f.tagIds.filter((x) => x !== id) : [...f.tagIds, id] }));
 
-  // Busca de dados via Open Library com fallback na Wikipedia
+  // Mapa de gêneros do Google Books → sistema
+  const mapGenre = (categories: string[] | undefined): string => {
+    if (!categories || categories.length === 0) return "";
+    const cat = categories[0].toLowerCase();
+
+    if (cat.includes("romance")) return "Romance";
+    if (cat.includes("realismo mágico") || cat.includes("magic realism")) return "Realismo Mágico";
+    if (cat.includes("fantasia") || cat.includes("fantasy")) return "Fantasia";
+    if (cat.includes("mistério") || cat.includes("mystery") || cat.includes("suspense") || cat.includes("thriller") || cat.includes("crime")) return "Mistério";
+    if (cat.includes("ficção clássica") || cat.includes("classic fiction") || cat.includes("literary")) return "Ficção Clássica";
+    if (cat.includes("poesia") || cat.includes("poetry")) return "Poesia";
+    if (cat.includes("biografia") || cat.includes("biography") || cat.includes("autobiography") || cat.includes("memoir")) return "Biografia";
+    if (cat.includes("ficção") || cat.includes("fiction") || cat.includes("science fiction") || cat.includes("ficção científica")) return "Ficção";
+    return "Outros";
+  };
+
+  // Helper: extrai a melhor URL de capa disponível
+  const extractBestCover = (imageLinks: Record<string, string> | undefined): string => {
+    if (!imageLinks) return "";
+    const priority = ["extraLarge", "large", "medium", "smallThumbnail", "thumbnail"];
+    for (const key of priority) {
+      if (imageLinks[key]) {
+        return imageLinks[key]
+          .replace(/^http:/, "https:")
+          .replace(/&edge=curl/g, "");
+      }
+    }
+    return "";
+  };
+
+  // Mesclagem Progressiva de Dados com gênero + smart fallback por título
   const handleSearchISBN = async () => {
     const normalizedIsbn = isbn.trim().replace(/-/g, "");
 
@@ -269,35 +299,147 @@ function BookForm({ initial, onSubmit, onCancel, isEdit, tags, onToast }: {
 
     try {
       setIsSearching(true);
-      const response = await fetch(`https://openlibrary.org/api/books?bibkeys=ISBN:${normalizedIsbn}&format=json&jscmd=data`);
 
-      if (!response.ok) throw new Error("Falha ao buscar dados do ISBN");
+      // ── ESTRUTURA INICIAL: Acumulador vazio ──
+      const acc: { title: string; author: string; year: string; pages: string; description: string; cover: string; genre: string } = {
+        title: "",
+        author: "",
+        year: "",
+        pages: "",
+        description: "",
+        cover: "",
+        genre: "",
+      };
 
-      const data = await response.json();
-      const bookData = data[`ISBN:${normalizedIsbn}`];
+      // ── ETAPA 1: BrasilAPI ──
+      try {
+        const brResponse = await fetch(`https://brasilapi.com.br/api/isbn/v1/${normalizedIsbn}`);
 
-      if (!bookData) throw new Error("ISBN não encontrado");
+        if (brResponse.ok) {
+          const brData = await brResponse.json();
 
-      const authors = Array.isArray(bookData.authors)
-        ? bookData.authors.map((author: { name?: string }) => author?.name).filter(Boolean).join(", ")
-        : "";
+          if (brData && brData.title) {
+            acc.title = brData.title || "";
+            acc.author = Array.isArray(brData.authors)
+              ? brData.authors.filter(Boolean).join(", ")
+              : (brData.authors || "");
+            acc.year = brData.year
+              ? String(brData.year)
+              : (typeof brData.published_date === "string"
+                  ? (brData.published_date.match(/\d{4}/)?.[0] || "")
+                  : "");
+            acc.pages = brData.page_count ? String(brData.page_count) : "";
+            acc.cover = brData.cover_url || brData.image || "";
+            acc.description = brData.synopsis || brData.description || "";
+          }
+        }
+      } catch {
+        // Falha silenciosa
+      }
 
-      const publishYear = typeof bookData.publish_date === "string"
-        ? Number(bookData.publish_date.match(/\d{4}/)?.[0] || 0)
-        : 0;
+      // ── ETAPA 2: Google Books (preenchimento de lacunas + gênero) ──
+      const camposImportantesVazios = !acc.cover || !acc.description || !acc.author || !acc.year || !acc.pages || !acc.title || !acc.genre;
 
-      const bookTitle = bookData.title || "";
+      if (camposImportantesVazios) {
+        try {
+          const gbResponse = await fetch(
+            `https://www.googleapis.com/books/v1/volumes?q=isbn:${normalizedIsbn}`
+          );
 
-      // Fallback na Wikipedia se autor não identificado ou sem descrição
-      let wikipediaDescription = "";
+          if (gbResponse.ok) {
+            const gbData = await gbResponse.json();
+            const volume = gbData?.items?.[0]?.volumeInfo;
 
-      const needsAuthorFallback = !authors || authors === "" || authors.toLowerCase().includes("[author not identified]");
-      const needsDescriptionFallback = !bookData.subtitle && !bookData.notes && !bookData.excerpts;
+            if (volume) {
+              // Título
+              if (!acc.title && volume.title) acc.title = volume.title;
 
-      if ((needsAuthorFallback || needsDescriptionFallback) && bookTitle) {
+              // Autor
+              if (!acc.author && Array.isArray(volume.authors)) {
+                acc.author = volume.authors.filter(Boolean).join(", ");
+              }
+
+              // Ano
+              if (!acc.year && typeof volume.publishedDate === "string") {
+                const match = volume.publishedDate.match(/\d{4}/);
+                if (match) acc.year = match[0];
+              }
+
+              // Páginas
+              if (!acc.pages && volume.pageCount) acc.pages = String(volume.pageCount);
+
+              // Capa (melhor resolução disponível)
+              if (!acc.cover && volume.imageLinks) {
+                acc.cover = extractBestCover(volume.imageLinks);
+              }
+
+              // Descrição
+              if (!acc.description && volume.description) acc.description = volume.description;
+
+              // Gênero (mapeado das categories)
+              if (!acc.genre) acc.genre = mapGenre(volume.categories);
+            }
+          }
+        } catch {
+          // Falha silenciosa
+        }
+      }
+
+      // ── ETAPA 3: Smart Fallback — busca por título no Google Books ──
+      if (acc.title && (!acc.cover || !acc.author || !acc.year || !acc.pages || !acc.genre)) {
+        try {
+          const titleResponse = await fetch(
+            `https://www.googleapis.com/books/v1/volumes?q=intitle:${encodeURIComponent(acc.title)}`
+          );
+
+          if (titleResponse.ok) {
+            const titleData = await titleResponse.json();
+            const titleVolume = titleData?.items?.[0]?.volumeInfo;
+
+            if (titleVolume) {
+              // Autor
+              if (!acc.author && Array.isArray(titleVolume.authors)) {
+                acc.author = titleVolume.authors.filter(Boolean).join(", ");
+              }
+
+              // Ano
+              if (!acc.year && typeof titleVolume.publishedDate === "string") {
+                const match = titleVolume.publishedDate.match(/\d{4}/);
+                if (match) acc.year = match[0];
+              }
+
+              // Páginas
+              if (!acc.pages && titleVolume.pageCount) acc.pages = String(titleVolume.pageCount);
+
+              // Gênero
+              if (!acc.genre) acc.genre = mapGenre(titleVolume.categories);
+
+              // Capa (melhor resolução, sem edge=curl)
+              if (!acc.cover && titleVolume.imageLinks) {
+                acc.cover = extractBestCover(titleVolume.imageLinks);
+              }
+            }
+          }
+        } catch {
+          // Falha silenciosa
+        }
+      }
+
+      // ── ETAPA 4: Fallback final de Capa (Open Library) e Sinopse (Wikipedia) ──
+
+      // Capa via Open Library (se ainda vazia)
+      if (!acc.cover) {
+        acc.cover = `https://covers.openlibrary.org/b/isbn/${normalizedIsbn}-L.jpg`;
+      }
+
+      // Gênero padrão se vazio
+      if (!acc.genre) acc.genre = "Outros";
+
+      // Sinopse via Wikipedia (se ainda vazia E temos título)
+      if (!acc.description && acc.title) {
         try {
           const searchRes = await fetch(
-            `https://pt.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(bookTitle + " livro")}&format=json&origin=*`
+            `https://pt.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(acc.title + " livro")}&format=json&origin=*`
           );
           const searchData = await searchRes.json();
           const firstResult = searchData?.query?.search?.[0];
@@ -310,9 +452,7 @@ function BookForm({ initial, onSubmit, onCancel, isEdit, tags, onToast }: {
             const pages = extractData?.query?.pages;
             if (pages) {
               const page = Object.values(pages)[0] as { extract?: string } | undefined;
-              if (page?.extract) {
-                wikipediaDescription = page.extract;
-              }
+              if (page?.extract) acc.description = page.extract;
             }
           }
         } catch {
@@ -320,21 +460,28 @@ function BookForm({ initial, onSubmit, onCancel, isEdit, tags, onToast }: {
         }
       }
 
-      setForm((prev) => ({
-        ...prev,
-        title: bookTitle || prev.title,
-        author: needsAuthorFallback ? (authors || "Autor não identificado") : authors,
-        year: publishYear ? String(publishYear) : prev.year,
-        pages: typeof bookData.number_of_pages === "number" ? String(bookData.number_of_pages) : prev.pages,
-        cover: bookData.cover?.large || bookData.cover?.medium || bookData.cover?.small || prev.cover,
-        description: (needsDescriptionFallback && wikipediaDescription) ? wikipediaDescription : (bookData.subtitle || prev.description || ""),
-      }));
+      // ── ATUALIZAR FORMULÁRIO E FEEDBACK ──
+      if (acc.title) {
+        setForm((prev) => ({
+          ...prev,
+          title: acc.title || prev.title,
+          author: acc.author || prev.author,
+          year: acc.year || prev.year,
+          pages: acc.pages || prev.pages,
+          cover: acc.cover || prev.cover,
+          description: acc.description || prev.description || "",
+          genre: acc.genre || prev.genre,
+        }));
 
+        setIsbn("");
+        onToast("Dados do livro carregados e combinados com sucesso no Bi-Bip!", "success");
+      } else {
+        setIsbn("");
+        onToast("ISBN não encontrado nas bases de dados. Insira as informações manualmente.", "error");
+      }
+    } catch {
       setIsbn("");
-      onToast(`Dados do ISBN carregados com sucesso no Bi-Bip!`, "success");
-    } catch (error) {
-      setIsbn("");
-      onToast("ISBN não encontrado no Bi-Bip Biblioteca Privada. Verifique o número e tente novamente.", "error");
+      onToast("ISBN não encontrado nas bases de dados. Insira as informações manualmente.", "error");
     } finally {
       setIsSearching(false);
     }
