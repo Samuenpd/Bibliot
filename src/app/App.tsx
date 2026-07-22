@@ -746,7 +746,7 @@ export default function App() {
           )}
           <BookMarked size={18} className="text-primary hidden md:block" />
           <span className="text-xl sm:text-2xl font-bold tracking-tight select-none" style={{ fontFamily: "'Playfair Display', serif", color: "#c0152a", letterSpacing: "-0.02em" }}>
-            Labubu
+            Bi-Bip
           </span>
           <span className="text-xs text-muted-foreground mt-1 hidden sm:block" style={{ fontFamily: "'DM Mono', monospace" }}>biblioteca privada</span>
         </div>
