@@ -20,6 +20,27 @@ type View = "catalog" | "add" | "edit" | "tags";
 type ReadFilter = "todos" | "lidos" | "nao-lidos";
 type ToastData = { message: string; type: "success" | "error" | "info" };
 
+declare global {
+  interface Window {
+    api: {
+      books: {
+        getAll: () => Promise<Book[]>;
+        add: (data: Omit<Book, "id">) => Promise<number>;
+        update: (id: number, data: Omit<Book, "id">) => Promise<void>;
+        delete: (id: number) => Promise<void>;
+        toggleRead: (id: number) => Promise<void>;
+        toggleFavorite: (id: number) => Promise<void>;
+      };
+      tags: {
+        getAll: () => Promise<TagDef[]>;
+        add: (data: Omit<TagDef, "id">) => Promise<number>;
+        update: (id: number, data: Omit<TagDef, "id">) => Promise<void>;
+        delete: (id: number) => Promise<void>;
+      };
+    };
+  }
+}
+
 // ── Constants ──────────────────────────────────────────────────────────────
 
 const TAG_COLORS = [
@@ -974,9 +995,22 @@ export default function App() {
     await window.api.books.toggleRead(id);
   };
 
+  const toBookPayload = (data: typeof EMPTY_FORM): Omit<Book, "id"> => ({
+    title: data.title,
+    author: data.author,
+    genre: data.genre,
+    year: data.year === "" ? 0 : Number(data.year),
+    rating: data.rating === "" ? 0 : Number(data.rating),
+    pages: data.pages === "" ? 0 : Number(data.pages),
+    cover: data.cover,
+    description: data.description,
+    featured: data.featured,
+    tagIds: data.tagIds,
+  });
+
   const handleAdd = async (data: typeof EMPTY_FORM) => {
     await window.api.books.add({
-      ...data,
+      ...toBookPayload(data),
       cover: data.cover || "https://images.unsplash.com/photo-1544947950-fa07a98d237f?w=300&h=420&fit=crop&auto=format",
     });
     await reloadBooks();
@@ -986,7 +1020,10 @@ export default function App() {
 
   const handleEdit = async (data: typeof EMPTY_FORM) => {
     if (!editingBook) return;
-    await window.api.books.update(editingBook.id, { ...data, cover: data.cover || editingBook.cover });
+    await window.api.books.update(editingBook.id, {
+      ...toBookPayload(data),
+      cover: data.cover || editingBook.cover,
+    });
     await reloadBooks();
     setEditingBook(null);
     setView("catalog");
