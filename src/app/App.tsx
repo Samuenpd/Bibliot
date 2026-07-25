@@ -258,23 +258,39 @@ function BookForm({ initial, onSubmit, onCancel, isEdit, tags, onToast }: {
   const toggleTag = (id: number) =>
     setForm((f) => ({ ...f, tagIds: f.tagIds.includes(id) ? f.tagIds.filter((x) => x !== id) : [...f.tagIds, id] }));
 
-  // Mapa de gêneros do Google Books → sistema
+  // Mapa de gêneros amplo (Google Books)
   const mapGenre = (categories: string[] | undefined): string => {
     if (!categories || categories.length === 0) return "";
     const cat = categories[0].toLowerCase();
 
-    if (cat.includes("romance")) return "Romance";
-    if (cat.includes("realismo mágico") || cat.includes("magic realism")) return "Realismo Mágico";
-    if (cat.includes("fantasia") || cat.includes("fantasy")) return "Fantasia";
-    if (cat.includes("mistério") || cat.includes("mystery") || cat.includes("suspense") || cat.includes("thriller") || cat.includes("crime")) return "Mistério";
-    if (cat.includes("ficção clássica") || cat.includes("classic fiction") || cat.includes("literary")) return "Ficção Clássica";
-    if (cat.includes("poesia") || cat.includes("poetry")) return "Poesia";
-    if (cat.includes("biografia") || cat.includes("biography") || cat.includes("autobiography") || cat.includes("memoir")) return "Biografia";
-    if (cat.includes("ficção") || cat.includes("fiction") || cat.includes("science fiction") || cat.includes("ficção científica")) return "Ficção";
+    if (/romance|romantic|love|relationships|erotic|chick-lit/.test(cat)) return "Romance";
+    if (/ficção|fiction|novel|literary|general fiction|short stories/.test(cat)) return "Ficção";
+    if (/fantasia|fantasy|magic|wizards|dragons/.test(cat)) return "Fantasia";
+    if (/thriller|suspense|mystery|crime|detective|horror/.test(cat)) return "Suspense";
+    if (/biografia|biography|autobiography|memoir/.test(cat)) return "Biografia";
+    if (/history|história|historical/.test(cat)) return "História";
+    if (/science|ciência|physics|technology|technology/.test(cat)) return "Ciência";
+    if (/poesia|poetry|poems/.test(cat)) return "Poesia";
+    if (/drama|teatro|plays/.test(cat)) return "Drama";
+    if (/juvenile|young adult|ya|children|infantil/.test(cat)) return "Infantil";
     return "Outros";
   };
 
-  // Helper: extrai a melhor URL de capa disponível
+  // Inferência de gênero por título/sinopse quando a API não devolver categorias
+  const inferGenreFromText = (title: string, description: string): string => {
+    const text = `${title} ${description}`.toLowerCase();
+
+    if (/romance|amor|apaixonar|relacionamento|namoro/.test(text)) return "Romance";
+    if (/fantasia|magia|reino|bruxo|dragão/.test(text)) return "Fantasia";
+    if (/assassino|crime|investigação|suspense|mistério/.test(text)) return "Suspense";
+    if (/biografia|memórias|autobiografia/.test(text)) return "Biografia";
+
+    if (description && description.trim().length > 40) return "Ficção";
+
+    return "Outros";
+  };
+
+  // Extrai capa com zoom hack (melhor resolução) e limpeza de URL
   const extractBestCover = (imageLinks: Record<string, string> | undefined): string => {
     if (!imageLinks) return "";
     const priority = ["extraLarge", "large", "medium", "smallThumbnail", "thumbnail"];
@@ -282,42 +298,56 @@ function BookForm({ initial, onSubmit, onCancel, isEdit, tags, onToast }: {
       if (imageLinks[key]) {
         return imageLinks[key]
           .replace(/^http:/, "https:")
-          .replace(/&edge=curl/g, "");
+          .replace(/&edge=curl/g, "")
+          .replace(/zoom=\d+/, "zoom=3");
       }
     }
     return "";
   };
 
-  // Mesclagem Progressiva de Dados com gênero + smart fallback por título
+  // Helper: percorre itens do Google Books e retorna o primeiro volume com capa
+  const findVolumeWithCover = async (isbnQuery: string): Promise<Record<string, any> | undefined> => {
+    const url = `https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(isbnQuery)}&maxResults=8`;
+    const res = await fetch(url);
+    if (!res.ok) return undefined;
+    const data = await res.json();
+    const items = data?.items || [];
+    for (const it of items) {
+      const v = it?.volumeInfo;
+      const hasCover = v?.imageLinks?.thumbnail || v?.imageLinks?.smallThumbnail;
+      if (hasCover) return v;
+    }
+    return items[0]?.volumeInfo;
+  };
+
+  // Mesclagem Progressiva de Dados com busca em cascata + gênero + capa multifocal
   const handleSearchISBN = async () => {
     const normalizedIsbn = isbn.trim().replace(/-/g, "");
 
     if (!normalizedIsbn) {
       onToast("Informe um ISBN para buscar os dados no Bi-Bip Biblioteca Privada.", "info");
+      setIsSearching(false);
       return;
     }
 
     try {
       setIsSearching(true);
 
-      // ── ESTRUTURA INICIAL: Acumulador vazio ──
-      const acc: { title: string; author: string; year: string; pages: string; description: string; cover: string; genre: string } = {
+      const acc: { title: string; author: string; year: string; pages: string; cover: string; description: string; genre: string } = {
         title: "",
         author: "",
         year: "",
         pages: "",
-        description: "",
         cover: "",
+        description: "",
         genre: "",
       };
 
       // ── ETAPA 1: BrasilAPI ──
       try {
         const brResponse = await fetch(`https://brasilapi.com.br/api/isbn/v1/${normalizedIsbn}`);
-
         if (brResponse.ok) {
           const brData = await brResponse.json();
-
           if (brData && brData.title) {
             acc.title = brData.title || "";
             acc.author = Array.isArray(brData.authors)
@@ -337,102 +367,84 @@ function BookForm({ initial, onSubmit, onCancel, isEdit, tags, onToast }: {
         // Falha silenciosa
       }
 
-      // ── ETAPA 2: Google Books (preenchimento de lacunas + gênero) ──
-      const camposImportantesVazios = !acc.cover || !acc.description || !acc.author || !acc.year || !acc.pages || !acc.title || !acc.genre;
+      // ── ETAPA 2: Google Books multifocal por ISBN ──
+      const needGoogle = !acc.cover || !acc.description || !acc.author || !acc.year || !acc.pages || !acc.title || !acc.genre;
 
-      if (camposImportantesVazios) {
+      if (needGoogle) {
         try {
-          const gbResponse = await fetch(
-            `https://www.googleapis.com/books/v1/volumes?q=isbn:${normalizedIsbn}`
-          );
-
-          if (gbResponse.ok) {
-            const gbData = await gbResponse.json();
-            const volume = gbData?.items?.[0]?.volumeInfo;
-
-            if (volume) {
-              // Título
-              if (!acc.title && volume.title) acc.title = volume.title;
-
-              // Autor
-              if (!acc.author && Array.isArray(volume.authors)) {
-                acc.author = volume.authors.filter(Boolean).join(", ");
-              }
-
-              // Ano
-              if (!acc.year && typeof volume.publishedDate === "string") {
-                const match = volume.publishedDate.match(/\d{4}/);
-                if (match) acc.year = match[0];
-              }
-
-              // Páginas
-              if (!acc.pages && volume.pageCount) acc.pages = String(volume.pageCount);
-
-              // Capa (melhor resolução disponível)
-              if (!acc.cover && volume.imageLinks) {
-                acc.cover = extractBestCover(volume.imageLinks);
-              }
-
-              // Descrição
-              if (!acc.description && volume.description) acc.description = volume.description;
-
-              // Gênero (mapeado das categories)
-              if (!acc.genre) acc.genre = mapGenre(volume.categories);
+          const volume = await findVolumeWithCover(`isbn:${normalizedIsbn}`);
+          if (volume) {
+            // Preencher lacunas com primeiro item válido encontrado
+            if (!acc.title && volume.title) acc.title = volume.title;
+            if (!acc.author && Array.isArray(volume.authors)) acc.author = volume.authors.filter(Boolean).join(", ");
+            if (!acc.year && typeof volume.publishedDate === "string") {
+              const m = volume.publishedDate.match(/\d{4}/);
+              if (m) acc.year = m[0];
             }
+            if (!acc.pages && volume.pageCount) acc.pages = String(volume.pageCount);
+            if (!acc.cover && volume.imageLinks) acc.cover = extractBestCover(volume.imageLinks);
+            if (!acc.description && volume.description) acc.description = volume.description;
+            if (!acc.genre) acc.genre = mapGenre(volume.categories);
           }
         } catch {
           // Falha silenciosa
         }
       }
 
-      // ── ETAPA 3: Smart Fallback — busca por título no Google Books ──
-      if (acc.title && (!acc.cover || !acc.author || !acc.year || !acc.pages || !acc.genre)) {
+      // ── ETAPA 3: CAÇA À CAPA E GÊNERO POR TÍTULO ( multifocal ) ──
+      if (acc.title && !acc.cover) {
         try {
-          const titleResponse = await fetch(
-            `https://www.googleapis.com/books/v1/volumes?q=intitle:${encodeURIComponent(acc.title)}`
-          );
-
-          if (titleResponse.ok) {
-            const titleData = await titleResponse.json();
-            const titleVolume = titleData?.items?.[0]?.volumeInfo;
-
-            if (titleVolume) {
-              // Autor
-              if (!acc.author && Array.isArray(titleVolume.authors)) {
-                acc.author = titleVolume.authors.filter(Boolean).join(", ");
-              }
-
-              // Ano
-              if (!acc.year && typeof titleVolume.publishedDate === "string") {
-                const match = titleVolume.publishedDate.match(/\d{4}/);
-                if (match) acc.year = match[0];
-              }
-
-              // Páginas
-              if (!acc.pages && titleVolume.pageCount) acc.pages = String(titleVolume.pageCount);
-
-              // Gênero
-              if (!acc.genre) acc.genre = mapGenre(titleVolume.categories);
-
-              // Capa (melhor resolução, sem edge=curl)
-              if (!acc.cover && titleVolume.imageLinks) {
-                acc.cover = extractBestCover(titleVolume.imageLinks);
-              }
+          const volumeTitle = await findVolumeWithCover(`${acc.title} ${acc.author}`);
+          if (volumeTitle) {
+            if (!acc.cover && volumeTitle.imageLinks) acc.cover = extractBestCover(volumeTitle.imageLinks);
+            if (!acc.genre) {
+              acc.genre = mapGenre(volumeTitle.categories);
+              if (!acc.genre) acc.genre = inferGenreFromText(acc.title, acc.description);
             }
           }
         } catch {
           // Falha silenciosa
         }
+      } else if (!acc.genre) {
+        acc.genre = inferGenreFromText(acc.title, acc.description);
       }
 
-      // ── ETAPA 4: Fallback final de Capa (Open Library) e Sinopse (Wikipedia) ──
-
-      // Capa via Open Library (se ainda vazia)
+      // ── ETAPA 4: VALIDAÇÃO/CAÇA FINAL DE CAPA (Open Library direto + por título) ──
       if (!acc.cover) {
-        acc.cover = `https://covers.openlibrary.org/b/isbn/${normalizedIsbn}-L.jpg`;
+        // Primeiro, tenta por ISBN direto com default=false (evita placeholder transparente)
+        try {
+          const olCoverUrl = `https://covers.openlibrary.org/b/isbn/${normalizedIsbn}-L.jpg?default=false`;
+          const coverRes = await fetch(olCoverUrl, { method: "GET" });
+          if (coverRes.ok && coverRes.headers.get("content-type")?.startsWith("image/")) {
+            acc.cover = olCoverUrl;
+          }
+        } catch {
+          // silencioso
+        }
       }
 
-      // Gênero padrão se vazio
+      // Se ainda não tiver capa, busca por título na Open Library
+      if (!acc.cover && acc.title) {
+        try {
+          const searchRes = await fetch(
+            `https://openlibrary.org/search.json?q=${encodeURIComponent(acc.title)}`
+          );
+          if (searchRes.ok) {
+            const searchData = await searchRes.json();
+            const coverId = searchData?.docs?.[0]?.cover_i;
+            if (coverId) {
+              acc.cover = `https://covers.openlibrary.org/b/id/${coverId}-L.jpg`;
+            }
+          }
+        } catch {
+          // silencioso
+        }
+      }
+
+      // Se mesmo assim não houver capa, deixa vazio para o formulário usar fallback padrão no backend (não altera DB aqui)
+      if (!acc.cover) acc.cover = "";
+
+      // Gênero padrão se vazio após inferência
       if (!acc.genre) acc.genre = "Outros";
 
       // Sinopse via Wikipedia (se ainda vazia E temos título)
@@ -443,7 +455,6 @@ function BookForm({ initial, onSubmit, onCancel, isEdit, tags, onToast }: {
           );
           const searchData = await searchRes.json();
           const firstResult = searchData?.query?.search?.[0];
-
           if (firstResult?.title) {
             const extractRes = await fetch(
               `https://pt.wikipedia.org/w/api.php?action=query&prop=extracts&exintro=1&explaintext=1&titles=${encodeURIComponent(firstResult.title)}&format=json&origin=*`
@@ -464,7 +475,7 @@ function BookForm({ initial, onSubmit, onCancel, isEdit, tags, onToast }: {
       if (acc.title) {
         setForm((prev) => ({
           ...prev,
-          title: acc.title || prev.title,
+          title: acc.title,
           author: acc.author || prev.author,
           year: acc.year || prev.year,
           pages: acc.pages || prev.pages,
@@ -472,7 +483,6 @@ function BookForm({ initial, onSubmit, onCancel, isEdit, tags, onToast }: {
           description: acc.description || prev.description || "",
           genre: acc.genre || prev.genre,
         }));
-
         setIsbn("");
         onToast("Dados do livro carregados e combinados com sucesso no Bi-Bip!", "success");
       } else {
@@ -1059,8 +1069,7 @@ export default function App() {
                             >
                               <Heart size={12} className={isFav ? "text-primary fill-primary" : "text-muted-foreground"} />
                             </div>
-                            {isRead && (
-                              <div className="absolute bottom-2 left-2 flex items-center gap-1 bg-primary text-primary-foreground text-xs px-1.5 py-0.5 rounded-full font-semibold">
+                            {isRead && (                              <div className="absolute bottom-2 left-2 flex items-center gap-1 bg-primary text-primary-foreground text-xs px-1.5 py-0.5 rounded-full font-semibold">
                                 <CheckCheck size={9} /> Lido
                               </div>
                             )}
