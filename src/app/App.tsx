@@ -2,7 +2,7 @@ import { useState, useMemo, useEffect, useCallback } from "react"; //sammy
 import {
   Search, BookOpen, Star, Heart, ChevronRight, Filter, X,
   BookMarked, Plus, Upload, Pencil, CheckCheck, Menu, SlidersHorizontal,
-  Tag, Trash2, AlertCircle, CheckCircle2, Info,
+  Tag, Trash2, AlertCircle, CheckCircle2, Info, ChevronDown,
 } from "lucide-react";
 
 // ── Types ──────────────────────────────────────────────────────────────────
@@ -33,12 +33,99 @@ const TAG_COLORS = [
   { label: "Marrom", value: "#8c6a58" },
 ];
 
-const GENRES = ["Todos", "Romance", "Realismo Mágico", "Mistério", "Ficção", "Fantasia", "Ficção Clássica", "Poesia", "Biografia", "Outros"];
+const GENRES = ["Romance", "Realismo Mágico", "Mistério", "Ficção", "Fantasia", "Ficção Clássica", "Poesia", "Biografia", "Outros"];
 
 const EMPTY_FORM = {
   title: "", author: "", genre: "Romance",
   year: "", rating: "", pages: "",
   cover: "", description: "", featured: false, tagIds: [] as number[],
+};
+
+// ── Helpers ────────────────────────────────────────────────────────────────
+
+const parseAuthors = (raw: any): string => {
+  let arr: string[] = [];
+  if (Array.isArray(raw)) {
+    arr = raw.filter(Boolean);
+  } else if (typeof raw === "string" && raw.trim()) {
+    arr = [raw.trim()];
+  }
+  const fixed = arr.map((name) => {
+    if (/,\s*\w/.test(name)) {
+      const parts = name.split(",").map((p) => p.trim()).filter(Boolean);
+      if (parts.length >= 2) return [parts[1], parts[0]].join(" ");
+    }
+    return name;
+  });
+  return fixed.join(", ");
+};
+
+const parseYear = (raw: any): string => {
+  const s = typeof raw === "string" ? raw : typeof raw === "number" ? String(raw) : "";
+  const m = s.match(/\d{4}/);
+  return m ? m[0] : "";
+};
+
+const mapGenre = (categories: string[] | undefined): string => {
+  if (!categories || categories.length === 0) return "";
+  const cat = categories[0].toLowerCase();
+
+  if (/romance|romantic|love|relationships|erotic|chick-lit/.test(cat)) return "Romance";
+  if (/realismo mágico|magic realism|magical realism/.test(cat)) return "Realismo Mágico";
+  if (/ficção clássica|classic fiction|classics|classic|clássico|literary|short stories/.test(cat)) return "Ficção Clássica";
+  if (/poesia|poetry|poems/.test(cat)) return "Poesia";
+  if (/biografia|biography|autobiography|memoir/.test(cat)) return "Biografia";
+  if (/ficção|fiction|novel|general fiction|literary/.test(cat)) return "Ficção";
+  if (/fantasia|fantasy|magic|wizards|dragons/.test(cat)) return "Fantasia";
+  if (/thriller|suspense|mystery|crime|detective|horror/.test(cat)) return "Mistério";
+  if (/history|história|historical/.test(cat)) return "História";
+  if (/science|ciência|physics|technology/.test(cat)) return "Ciência";
+  if (/drama|teatro|plays/.test(cat)) return "Drama";
+  if (/juvenile|young adult|ya|children|infantil/.test(cat)) return "Infantil";
+  return "Outros";
+};
+
+const inferGenreFromText = (title: string, description: string): string => {
+  const text = `${title} ${description}`.toLowerCase();
+
+  if (/romance|amor|apaixonar|relacionamento|namoro/.test(text)) return "Romance";
+  if (/realismo mágico|magia|reino|bruxo|dragão/.test(text)) return "Realismo Mágico";
+  if (/clássico|clássicos|literatura clássica/.test(text)) return "Ficção Clássica";
+  if (/assassino|crime|investigação|suspense|mistério|detetive/.test(text)) return "Mistério";
+  if (/fantasia|magia|reino|bruxo|dragão/.test(text)) return "Fantasia";
+  if (/biografia|memórias|autobiografia/.test(text)) return "Biografia";
+
+  if (description && description.trim().length > 40) return "Ficção";
+
+  return "Outros";
+};
+
+const extractBestCover = (imageLinks: Record<string, string> | undefined): string => {
+  if (!imageLinks) return "";
+  const priority = ["extraLarge", "large", "medium", "smallThumbnail", "thumbnail"];
+  for (const key of priority) {
+    if (imageLinks[key]) {
+      return imageLinks[key]
+        .replace(/^http:/, "https:")
+        .replace(/&edge=curl/g, "")
+        .replace(/zoom=\d+/, "zoom=3");
+    }
+  }
+  return "";
+};
+
+const findVolumeWithCover = async (isbnQuery: string): Promise<Record<string, any> | undefined> => {
+  const url = `https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(isbnQuery)}&maxResults=8`;
+  const res = await fetch(url);
+  if (!res.ok) return undefined;
+  const data = await res.json();
+  const items = data?.items || [];
+  for (const it of items) {
+    const v = it?.volumeInfo;
+    const hasCover = v?.imageLinks?.thumbnail || v?.imageLinks?.smallThumbnail;
+    if (hasCover) return v;
+  }
+  return items[0]?.volumeInfo;
 };
 
 // ── Small components ────────────────────────────────────────────────────────
@@ -248,6 +335,7 @@ function BookForm({ initial, onSubmit, onCancel, isEdit, tags, onToast }: {
   const [saved, setSaved] = useState(false);
   const [isbn, setIsbn] = useState("");
   const [isSearching, setIsSearching] = useState(false);
+  const [isGenreOpen, setIsGenreOpen] = useState(false);
 
   const set = (field: keyof typeof EMPTY_FORM) =>
     (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) => {
@@ -320,7 +408,7 @@ function BookForm({ initial, onSubmit, onCancel, isEdit, tags, onToast }: {
     return items[0]?.volumeInfo;
   };
 
-  // Mesclagem Progressiva de Dados com busca em cascata + gênero + capa multifocal
+  // Fallback granular em cascata (campo a campo)
   const handleSearchISBN = async () => {
     const normalizedIsbn = isbn.trim().replace(/-/g, "");
 
@@ -350,68 +438,57 @@ function BookForm({ initial, onSubmit, onCancel, isEdit, tags, onToast }: {
           const brData = await brResponse.json();
           if (brData && brData.title) {
             acc.title = brData.title || "";
-            acc.author = Array.isArray(brData.authors)
-              ? brData.authors.filter(Boolean).join(", ")
-              : (brData.authors || "");
-            acc.year = brData.year
-              ? String(brData.year)
-              : (typeof brData.published_date === "string"
-                  ? (brData.published_date.match(/\d{4}/)?.[0] || "")
-                  : "");
+            acc.author = parseAuthors(brData.authors);
+            acc.year = parseYear(brData.year || brData.published_date || "");
             acc.pages = brData.page_count ? String(brData.page_count) : "";
             acc.cover = brData.cover_url || brData.image || "";
             acc.description = brData.synopsis || brData.description || "";
           }
         }
       } catch {
-        // Falha silenciosa
+        // silencioso
       }
 
-      // ── ETAPA 2: Google Books multifocal por ISBN ──
-      const needGoogle = !acc.cover || !acc.description || !acc.author || !acc.year || !acc.pages || !acc.title || !acc.genre;
-
-      if (needGoogle) {
+      // ── ETAPA 2: Google Books ISBN (preenche apenas lacunas) ──
+      if (!acc.author || !acc.year || !acc.cover || !acc.genre || !acc.title) {
         try {
           const volume = await findVolumeWithCover(`isbn:${normalizedIsbn}`);
           if (volume) {
-            // Preencher lacunas com primeiro item válido encontrado
             if (!acc.title && volume.title) acc.title = volume.title;
-            if (!acc.author && Array.isArray(volume.authors)) acc.author = volume.authors.filter(Boolean).join(", ");
-            if (!acc.year && typeof volume.publishedDate === "string") {
-              const m = volume.publishedDate.match(/\d{4}/);
-              if (m) acc.year = m[0];
+            if (!acc.author && Array.isArray(volume.authors)) acc.author = parseAuthors(volume.authors);
+            if (!acc.year) {
+              const y = parseYear(volume.publishedDate || "");
+              if (y) acc.year = y;
             }
-            if (!acc.pages && volume.pageCount) acc.pages = String(volume.pageCount);
             if (!acc.cover && volume.imageLinks) acc.cover = extractBestCover(volume.imageLinks);
-            if (!acc.description && volume.description) acc.description = volume.description;
             if (!acc.genre) acc.genre = mapGenre(volume.categories);
           }
         } catch {
-          // Falha silenciosa
+          // silencioso
         }
       }
 
-      // ── ETAPA 3: CAÇA À CAPA E GÊNERO POR TÍTULO ( multifocal ) ──
-      if (acc.title && !acc.cover) {
+      // ── ETAPA 3: Google Books por Título (preenche apenas lacunas) ──
+      if ((acc.title && !acc.cover) || !acc.author || !acc.year) {
         try {
-          const volumeTitle = await findVolumeWithCover(`${acc.title} ${acc.author}`);
+          const q = [acc.title, acc.author].filter(Boolean).join(" ");
+          const volumeTitle = await findVolumeWithCover(q || acc.title);
           if (volumeTitle) {
-            if (!acc.cover && volumeTitle.imageLinks) acc.cover = extractBestCover(volumeTitle.imageLinks);
-            if (!acc.genre) {
-              acc.genre = mapGenre(volumeTitle.categories);
-              if (!acc.genre) acc.genre = inferGenreFromText(acc.title, acc.description);
+            if (!acc.author && Array.isArray(volumeTitle.authors)) acc.author = parseAuthors(volumeTitle.authors);
+            if (!acc.year) {
+              const y = parseYear(volumeTitle.publishedDate || "");
+              if (y) acc.year = y;
             }
+            if (!acc.cover && volumeTitle.imageLinks) acc.cover = extractBestCover(volumeTitle.imageLinks);
+            if (!acc.genre) acc.genre = mapGenre(volumeTitle.categories);
           }
         } catch {
-          // Falha silenciosa
+          // silencioso
         }
-      } else if (!acc.genre) {
-        acc.genre = inferGenreFromText(acc.title, acc.description);
       }
 
-      // ── ETAPA 4: VALIDAÇÃO/CAÇA FINAL DE CAPA (Open Library direto + por título) ──
+      // ── ETAPA 4: Open Library ISBN + busca por título (foco em capa/autor/ano) ──
       if (!acc.cover) {
-        // Primeiro, tenta por ISBN direto com default=false (evita placeholder transparente)
         try {
           const olCoverUrl = `https://covers.openlibrary.org/b/isbn/${normalizedIsbn}-L.jpg?default=false`;
           const coverRes = await fetch(olCoverUrl, { method: "GET" });
@@ -423,17 +500,17 @@ function BookForm({ initial, onSubmit, onCancel, isEdit, tags, onToast }: {
         }
       }
 
-      // Se ainda não tiver capa, busca por título na Open Library
       if (!acc.cover && acc.title) {
         try {
-          const searchRes = await fetch(
-            `https://openlibrary.org/search.json?q=${encodeURIComponent(acc.title)}`
-          );
+          const searchRes = await fetch(`https://openlibrary.org/search.json?q=${encodeURIComponent(acc.title)}`);
           if (searchRes.ok) {
             const searchData = await searchRes.json();
             const coverId = searchData?.docs?.[0]?.cover_i;
-            if (coverId) {
-              acc.cover = `https://covers.openlibrary.org/b/id/${coverId}-L.jpg`;
+            if (coverId) acc.cover = `https://covers.openlibrary.org/b/id/${coverId}-L.jpg`;
+            if (!acc.author && searchData?.docs?.[0]?.author_name) acc.author = parseAuthors(searchData.docs[0].author_name);
+            if (!acc.year) {
+              const y = parseYear(searchData?.docs?.[0]?.first_publish_year || "");
+              if (y) acc.year = y;
             }
           }
         } catch {
@@ -441,24 +518,19 @@ function BookForm({ initial, onSubmit, onCancel, isEdit, tags, onToast }: {
         }
       }
 
-      // Se mesmo assim não houver capa, deixa vazio para o formulário usar fallback padrão no backend (não altera DB aqui)
+      // inferência e fallbacks finais
+      if (!acc.genre) acc.genre = inferGenreFromText(acc.title, acc.description);
+      if (!acc.genre) acc.genre = "Outros";
       if (!acc.cover) acc.cover = "";
 
-      // Gênero padrão se vazio após inferência
-      if (!acc.genre) acc.genre = "Outros";
-
-      // Sinopse via Wikipedia (se ainda vazia E temos título)
+      // Wikipedia (sinopse)
       if (!acc.description && acc.title) {
         try {
-          const searchRes = await fetch(
-            `https://pt.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(acc.title + " livro")}&format=json&origin=*`
-          );
+          const searchRes = await fetch(`https://pt.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(acc.title + " livro")}&format=json&origin=*`);
           const searchData = await searchRes.json();
           const firstResult = searchData?.query?.search?.[0];
           if (firstResult?.title) {
-            const extractRes = await fetch(
-              `https://pt.wikipedia.org/w/api.php?action=query&prop=extracts&exintro=1&explaintext=1&titles=${encodeURIComponent(firstResult.title)}&format=json&origin=*`
-            );
+            const extractRes = await fetch(`https://pt.wikipedia.org/w/api.php?action=query&prop=extracts&exintro=1&explaintext=1&titles=${encodeURIComponent(firstResult.title)}&format=json&origin=*`);
             const extractData = await extractRes.json();
             const pages = extractData?.query?.pages;
             if (pages) {
@@ -467,11 +539,10 @@ function BookForm({ initial, onSubmit, onCancel, isEdit, tags, onToast }: {
             }
           }
         } catch {
-          // Fallback silencioso
+          // silencioso
         }
       }
 
-      // ── ATUALIZAR FORMULÁRIO E FEEDBACK ──
       if (acc.title) {
         setForm((prev) => ({
           ...prev,
@@ -568,9 +639,31 @@ function BookForm({ initial, onSubmit, onCancel, isEdit, tags, onToast }: {
 
         <div className="grid grid-cols-2 gap-3 sm:gap-4">
           <Field label="Gênero *">
-            <select required value={form.genre} onChange={set("genre")} className={inputCls}>
-              {GENRES.filter((g) => g !== "Todos").map((g) => <option key={g} value={g}>{g}</option>)}
-            </select>
+            <div className="relative genre-dropdown-container">
+              <button
+                type="button"
+                onClick={() => setIsGenreOpen((prev) => !prev)}
+                onMouseDown={(e) => e.preventDefault()}
+                className={`${inputCls} flex justify-between items-center cursor-pointer appearance-none outline-none focus:outline-none focus:ring-0 focus:border-transparent active:outline-none active:ring-0 active:border-transparent`}
+              >
+                <span className="truncate">{form.genre || "Selecione..."}</span>
+                <ChevronDown size={16} className="text-muted-foreground" />
+              </button>
+              {isGenreOpen && (
+                <div className="absolute z-50 w-full mt-1 bg-popover border border-border rounded-xl shadow-lg max-h-60 overflow-y-auto">
+                  {GENRES.map((option) => (
+                    <button
+                      key={option}
+                      type="button"
+                      onClick={() => { setForm({ ...form, genre: option }); setIsGenreOpen(false); }}
+                      className={`w-full text-left px-4 py-2 text-sm cursor-pointer hover:bg-accent hover:text-accent-foreground ${form.genre === option ? 'bg-accent/60 text-accent-foreground font-semibold' : 'text-foreground'}`}
+                    >
+                      {option}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
           </Field>
           <Field label="Ano">
             <input type="number" min={0} max={new Date().getFullYear()} value={form.year || ""} onChange={set("year")} className={inputCls} />
