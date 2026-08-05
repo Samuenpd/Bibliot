@@ -37,6 +37,10 @@ declare global {
         update: (id: number, data: Omit<TagDef, "id">) => Promise<void>;
         delete: (id: number) => Promise<void>;
       };
+      downloadImage: (url: string) => Promise<string>;
+      saveImageFromPath: (path: string) => Promise<string>;
+      saveImageFromBuffer: (buffer: ArrayBuffer | Uint8Array) => Promise<string>;
+      selectImage: () => Promise<string | null>;
     };
   }
 }
@@ -357,6 +361,7 @@ function BookForm({ initial, onSubmit, onCancel, isEdit, tags, onToast }: {
   const [isbn, setIsbn] = useState("");
   const [isSearching, setIsSearching] = useState(false);
   const [isGenreOpen, setIsGenreOpen] = useState(false);
+  const [isDragOver, setIsDragOver] = useState(false);
 
   const set = (field: keyof typeof EMPTY_FORM) =>
     (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) => {
@@ -366,6 +371,54 @@ function BookForm({ initial, onSubmit, onCancel, isEdit, tags, onToast }: {
 
   const toggleTag = (id: number) =>
     setForm((f) => ({ ...f, tagIds: f.tagIds.includes(id) ? f.tagIds.filter((x) => x !== id) : [...f.tagIds, id] }));
+
+  // ── Handlers de imagem (upload local, drag & drop, colar) ──────────────
+  const handleSelectImage = async () => {
+    try {
+      onToast("Salvando imagem no acervo...", "info");
+      const localUrl = await window.api.selectImage();
+      if (localUrl) setForm((f) => ({ ...f, cover: localUrl }));
+    } catch {
+      onToast("Não foi possível selecionar a imagem.", "error");
+    }
+  };
+
+  const handleDropImage = async (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragOver(false);
+    const file = e.dataTransfer.files?.[0];
+    if (!file) return;
+    try {
+      onToast("Salvando imagem no acervo...", "info");
+      const localUrl = await window.api.saveImageFromPath((file as any).path);
+      if (localUrl) setForm((f) => ({ ...f, cover: localUrl }));
+    } catch {
+      onToast("Não foi possível salvar a imagem arrastada.", "error");
+    }
+  };
+
+  const handlePasteImage = async (e: React.ClipboardEvent) => {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+    for (const item of items) {
+      if (item.type.startsWith("image/")) {
+        e.preventDefault();
+        const blob = item.getAsFile();
+        if (!blob) continue;
+        try {
+          onToast("Salvando imagem no acervo...", "info");
+          const buffer = await blob.arrayBuffer();
+          const uint8Array = new Uint8Array(buffer);
+          const localUrl = await window.api.saveImageFromBuffer(uint8Array);
+          if (localUrl) setForm((f) => ({ ...f, cover: localUrl }));
+        } catch {
+          onToast("Não foi possível salvar a imagem colada.", "error");
+        }
+        break;
+      }
+    }
+  };
 
   // Mapa de gêneros amplo (Google Books)
   const mapGenre = (categories: string[] | undefined): string => {
@@ -429,6 +482,16 @@ function BookForm({ initial, onSubmit, onCancel, isEdit, tags, onToast }: {
     return items[0]?.volumeInfo;
   };
 
+  // Baixa a capa para armazenamento local. Se falhar, mantém a URL original.
+  const downloadCover = async (url: string): Promise<string> => {
+    if (!url) return "";
+    try {
+      return await window.api.downloadImage(url);
+    } catch {
+      return url; // fallback: mantém a URL da web
+    }
+  };
+
   // Fallback granular em cascata (campo a campo)
   const handleSearchISBN = async () => {
     const normalizedIsbn = isbn.trim().replace(/-/g, "");
@@ -462,7 +525,7 @@ function BookForm({ initial, onSubmit, onCancel, isEdit, tags, onToast }: {
             acc.author = parseAuthors(brData.authors);
             acc.year = parseYear(brData.year || brData.published_date || "");
             acc.pages = brData.page_count ? String(brData.page_count) : "";
-            acc.cover = brData.cover_url || brData.image || "";
+            acc.cover = await downloadCover(brData.cover_url || brData.image || "");
             acc.description = brData.synopsis || brData.description || "";
           }
         }
@@ -481,7 +544,7 @@ function BookForm({ initial, onSubmit, onCancel, isEdit, tags, onToast }: {
               const y = parseYear(volume.publishedDate || "");
               if (y) acc.year = y;
             }
-            if (!acc.cover && volume.imageLinks) acc.cover = extractBestCover(volume.imageLinks);
+            if (!acc.cover && volume.imageLinks) acc.cover = await downloadCover(extractBestCover(volume.imageLinks));
             if (!acc.genre) acc.genre = mapGenre(volume.categories);
           }
         } catch {
@@ -500,7 +563,7 @@ function BookForm({ initial, onSubmit, onCancel, isEdit, tags, onToast }: {
               const y = parseYear(volumeTitle.publishedDate || "");
               if (y) acc.year = y;
             }
-            if (!acc.cover && volumeTitle.imageLinks) acc.cover = extractBestCover(volumeTitle.imageLinks);
+            if (!acc.cover && volumeTitle.imageLinks) acc.cover = await downloadCover(extractBestCover(volumeTitle.imageLinks));
             if (!acc.genre) acc.genre = mapGenre(volumeTitle.categories);
           }
         } catch {
@@ -514,7 +577,7 @@ function BookForm({ initial, onSubmit, onCancel, isEdit, tags, onToast }: {
           const olCoverUrl = `https://covers.openlibrary.org/b/isbn/${normalizedIsbn}-L.jpg?default=false`;
           const coverRes = await fetch(olCoverUrl, { method: "GET" });
           if (coverRes.ok && coverRes.headers.get("content-type")?.startsWith("image/")) {
-            acc.cover = olCoverUrl;
+            acc.cover = await downloadCover(olCoverUrl);
           }
         } catch {
           // silencioso
@@ -527,7 +590,7 @@ function BookForm({ initial, onSubmit, onCancel, isEdit, tags, onToast }: {
           if (searchRes.ok) {
             const searchData = await searchRes.json();
             const coverId = searchData?.docs?.[0]?.cover_i;
-            if (coverId) acc.cover = `https://covers.openlibrary.org/b/id/${coverId}-L.jpg`;
+            if (coverId) acc.cover = await downloadCover(`https://covers.openlibrary.org/b/id/${coverId}-L.jpg`);
             if (!acc.author && searchData?.docs?.[0]?.author_name) acc.author = parseAuthors(searchData.docs[0].author_name);
             if (!acc.year) {
               const y = parseYear(searchData?.docs?.[0]?.first_publish_year || "");
@@ -604,12 +667,19 @@ function BookForm({ initial, onSubmit, onCancel, isEdit, tags, onToast }: {
         <p className="text-sm text-muted-foreground">{isEdit ? "Altere os dados e salve." : "Preencha os dados para adicionar ao acervo."}</p>
       </div>
 
-      <form onSubmit={handleSubmit} className="flex flex-col gap-4 sm:gap-5">
+      <form onSubmit={handleSubmit} onPaste={handlePasteImage} className="flex flex-col gap-4 sm:gap-5">
         <div className="flex gap-4 items-start">
-          <div className="w-20 h-28 sm:w-24 sm:h-36 rounded-xl overflow-hidden bg-accent shrink-0 border border-border">
+          <div
+            onClick={handleSelectImage}
+            onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); setIsDragOver(true); }}
+            onDragLeave={() => setIsDragOver(false)}
+            onDrop={handleDropImage}
+            title="Clique para selecionar, arraste uma imagem ou cole (Ctrl+V)"
+            className={`w-20 h-28 sm:w-24 sm:h-36 rounded-xl overflow-hidden bg-accent shrink-0 border border-border cursor-pointer hover:opacity-80 transition-opacity ${isDragOver ? "ring-2 ring-primary border-primary" : ""}`}
+          >
             {form.cover
               ? <img src={form.cover} alt="capa" className="w-full h-full object-cover" />
-              : <div className="w-full h-full flex flex-col items-center justify-center gap-1 text-muted-foreground"><Upload size={16} /><span className="text-xs text-center px-1">sem capa</span></div>
+              : <div className="w-full h-full flex flex-col items-center justify-center gap-1 text-muted-foreground"><Upload size={16} /><span className="text-xs text-center px-1">{isDragOver ? "Solte aqui" : "sem capa"}</span></div>
             }
           </div>
           <div className="flex-1 min-w-0">

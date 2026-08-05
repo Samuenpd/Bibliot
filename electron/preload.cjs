@@ -16,4 +16,8 @@ contextBridge.exposeInMainWorld("api", {
     update: (id, data) => ipcRenderer.invoke("tags:update", id, data),
     delete: (id) => ipcRenderer.invoke("tags:delete", id),
   },
+  downloadImage: (url) => ipcRenderer.invoke("download-image-from-url", url),
+  saveImageFromPath: (path) => ipcRenderer.invoke("save-image-from-path", path),
+  saveImageFromBuffer: (buffer) => ipcRenderer.invoke("save-image-from-buffer", buffer),
+  selectImage: () => ipcRenderer.invoke("select-image-dialog"),
 });
