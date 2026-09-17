@@ -100,7 +100,14 @@ function copyFileToCovers(srcPath) {
 
 function registerCoverProtocol() {
   protocol.handle("cover", (request) => {
-    const filename = request.url.replace("cover://", "");
+    // Usa o parser de URL: com "standard: true" o nome do arquivo
+    // em "cover://arquivo.jpg" é normalizado como host da URL.
+    const parsedUrl = new URL(request.url);
+    const filename = decodeURIComponent(parsedUrl.hostname);
+    // Proteção básica contra path traversal: o valor vem da URL.
+    if (!filename || filename.includes("..") || filename.includes("/") || filename.includes("\\")) {
+      throw new Error(`Nome de arquivo de capa invalido: ${filename}`);
+    }
     const filePath = path.join(coversDir, filename);
     return net.fetch(pathToFileURL(filePath).toString());
   });
