@@ -2,7 +2,7 @@ import { useState, useMemo, useEffect, useCallback } from "react"; //sammy
 import {
   Search, BookOpen, Star, Heart, ChevronRight, Filter, X,
   BookMarked, Plus, Upload, Pencil, CheckCheck, Menu, SlidersHorizontal,
-  Tag, Trash2, AlertCircle, CheckCircle2, Info, ChevronDown,
+  Tag, Trash2, AlertCircle, CheckCircle2, Info, ChevronDown, Settings,
 } from "lucide-react";
 
 // ── Types ──────────────────────────────────────────────────────────────────
@@ -14,11 +14,18 @@ type Book = {
   year: number; rating: number; pages: number; cover: string;
   description: string; featured: boolean; tagIds: number[];
   isRead?: boolean; isFavorite?: boolean;
+  format: string; location: string; borrowedBy: string; notes: string;
 };
 
-type View = "catalog" | "add" | "edit" | "tags";
+type View = "catalog" | "add" | "edit" | "tags" | "settings";
 type ReadFilter = "todos" | "lidos" | "nao-lidos";
 type ToastData = { message: string; type: "success" | "error" | "info" };
+const COLOR_PALETTES = [
+  { id: "orange", name: "Laranja", color: "#e87924", border: "rgba(232, 121, 36, 0.16)" },
+  { id: "red", name: "Vermelha", color: "#c0152a", border: "rgba(192, 21, 42, 0.12)" },
+  { id: "cyan", name: "Ciano", color: "#0891b2", border: "rgba(8, 145, 178, 0.16)" },
+  { id: "green", name: "Verde", color: "#16834a", border: "rgba(22, 131, 74, 0.16)" },
+];
 
 declare global {
   interface Window {
@@ -37,6 +44,7 @@ declare global {
         update: (id: number, data: Omit<TagDef, "id">) => Promise<void>;
         delete: (id: number) => Promise<void>;
       };
+      settings: { getStoragePath: () => Promise<string | null>; chooseStoragePath: () => Promise<string | null> };
       downloadImage: (url: string) => Promise<string>;
       saveImageFromPath: (path: string) => Promise<string>;
       saveImageFromBuffer: (buffer: ArrayBuffer | Uint8Array) => Promise<string>;
@@ -58,12 +66,13 @@ const TAG_COLORS = [
   { label: "Marrom", value: "#8c6a58" },
 ];
 
-const GENRES = ["Romance", "Realismo Mágico", "Mistério", "Ficção", "Fantasia", "Ficção Clássica", "Poesia", "Biografia", "Outros"];
+const GENRES = ["Romance", "Realismo Mágico", "Mistério", "Suspense", "Ficção", "Fantasia", "Ficção Clássica", "Poesia", "Biografia", "História", "Ciência", "Drama", "Infantil", "Autoajuda", "Religião", "Quadrinhos", "Terror", "Aventura", "Outros"];
 
 const EMPTY_FORM = {
   title: "", author: "", genre: "Romance",
   year: "", rating: "", pages: "",
   cover: "", description: "", featured: false, tagIds: [] as number[],
+  format: "Físico", location: "", borrowedBy: "", notes: "",
 };
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -265,7 +274,7 @@ function SidebarContent({
   tags: TagDef[]; onClose?: () => void;
 }) {
   return (
-    <div className="flex flex-col gap-5 h-full overflow-y-auto p-5">
+    <div className="flex flex-1 min-h-0 flex-col gap-5 overflow-y-auto overscroll-contain p-5">
       <div>
         <label className="text-xs font-semibold text-muted-foreground uppercase tracking-widest mb-2 block" style={{ fontFamily: "'DM Mono', monospace" }}>Pesquisar</label>
         <div className="relative">
@@ -762,6 +771,20 @@ function BookForm({ initial, onSubmit, onCancel, isEdit, tags, onToast }: {
         </div>
 
         <div className="grid grid-cols-2 gap-3 sm:gap-4">
+          <Field label="Formato">
+            <select value={form.format} onChange={set("format")} className={inputCls}>
+              <option>Físico</option><option>Ebook</option>
+            </select>
+          </Field>
+          <Field label="Onde está (localização)">
+            <input type="text" placeholder="Estante, quarto, Kindle..." value={form.location} onChange={set("location")} className={inputCls} />
+          </Field>
+        </div>
+        <Field label="Emprestado para">
+          <input type="text" placeholder="Nome de quem está com o livro" value={form.borrowedBy} onChange={set("borrowedBy")} className={inputCls} />
+        </Field>
+
+        <div className="grid grid-cols-2 gap-3 sm:gap-4">
           <Field label="Páginas">
             <input type="number" min={1} placeholder="ex: 320" value={form.pages || ""} onChange={set("pages")} className={inputCls} />
           </Field>
@@ -772,6 +795,9 @@ function BookForm({ initial, onSubmit, onCancel, isEdit, tags, onToast }: {
 
         <Field label="Sinopse">
           <textarea rows={3} placeholder="Breve descrição..." value={form.description} onChange={set("description")} className={inputCls + " resize-none"} />
+        </Field>
+        <Field label="Informações ou comentários">
+          <textarea rows={3} placeholder="Anotações pessoais sobre este livro..." value={form.notes} onChange={set("notes")} className={inputCls + " resize-none"} />
         </Field>
 
         {tags.length > 0 && (
@@ -1012,6 +1038,11 @@ export default function App() {
   const [books, setBooks] = useState<Book[]>([]);
   const [tags, setTags] = useState<TagDef[]>([]);
   const [loading, setLoading] = useState(true);
+  const [storagePath, setStoragePath] = useState("");
+  const [paletteId, setPaletteId] = useState(() => {
+    const saved = localStorage.getItem("bibip-color-palette");
+    return COLOR_PALETTES.some((palette) => palette.id === saved) ? saved! : "orange";
+  });
   const [search, setSearch] = useState("");
   const [selectedGenre, setSelectedGenre] = useState("Todos");
   const [selectedTagId, setSelectedTagId] = useState<number | null>(null);
@@ -1038,10 +1069,25 @@ export default function App() {
 
   useEffect(() => {
     (async () => {
-      await Promise.all([reloadBooks(), reloadTags()]);
+      const savedPath = await window.api.settings.getStoragePath();
+      setStoragePath(savedPath || "");
+      if (savedPath) await Promise.all([reloadBooks(), reloadTags()]);
       setLoading(false);
     })();
   }, []);
+
+  useEffect(() => {
+    const palette = COLOR_PALETTES.find((item) => item.id === paletteId) || COLOR_PALETTES[0];
+    const root = document.documentElement;
+    root.style.setProperty("--primary", palette.color);
+    root.style.setProperty("--ring", palette.color);
+    root.style.setProperty("--chart-1", palette.color);
+    root.style.setProperty("--sidebar-primary", palette.color);
+    root.style.setProperty("--sidebar-ring", palette.color);
+    root.style.setProperty("--border", palette.border);
+    root.style.setProperty("--sidebar-border", palette.border);
+    localStorage.setItem("bibip-color-palette", palette.id);
+  }, [paletteId]);
 
   const filtered = useMemo(() => {
     return books.filter((b) => {
@@ -1076,6 +1122,7 @@ export default function App() {
     description: data.description,
     featured: data.featured,
     tagIds: data.tagIds,
+    format: data.format, location: data.location, borrowedBy: data.borrowedBy, notes: data.notes,
   });
 
   const handleAdd = async (data: typeof EMPTY_FORM) => {
@@ -1130,10 +1177,23 @@ export default function App() {
     );
   }
 
+  if (!storagePath) {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center px-4" style={{ fontFamily: "'Nunito', sans-serif" }}>
+        <section className="w-full max-w-lg bg-card border border-border rounded-3xl p-7 sm:p-9 shadow-xl">
+          <BookMarked size={30} className="text-primary mb-4" />
+          <h1 className="text-2xl sm:text-3xl font-bold text-foreground mb-2" style={{ fontFamily: "'Playfair Display', serif" }}>Onde salvar sua biblioteca?</h1>
+          <p className="text-sm text-muted-foreground leading-relaxed mb-6">Antes de começar, escolha uma pasta para guardar seus livros e capas. Você pode escolher o HD externo agora e alterar esse local depois nas Configurações.</p>
+          <button onClick={async () => { await window.api.settings.chooseStoragePath(); }} className="w-full px-4 py-3 rounded-xl bg-primary text-primary-foreground text-sm font-semibold hover:opacity-90 transition-opacity">Escolher pasta para salvar</button>
+        </section>
+      </div>
+    );
+  }
+
   return (
-    <div className="min-h-screen bg-background flex flex-col" style={{ fontFamily: "'Nunito', sans-serif" }}>
+    <div className="h-screen overflow-hidden bg-background flex flex-col" style={{ fontFamily: "'Nunito', sans-serif" }}>
       {/* Header */}
-      <header className="bg-card border-b border-border px-4 sm:px-6 py-3 flex items-center justify-between z-20 sticky top-0">
+      <header className="bg-card border-b border-border px-4 sm:px-6 py-3 flex items-center justify-between z-20 sticky top-0 shrink-0">
         <div className="flex items-center gap-2 sm:gap-3">
           {view === "catalog" && (
             <button onClick={() => setDrawerOpen(true)} className="md:hidden p-1.5 rounded-md text-muted-foreground hover:text-primary hover:bg-accent transition-colors" aria-label="Filtros">
@@ -1141,7 +1201,7 @@ export default function App() {
             </button>
           )}
           <BookMarked size={18} className="text-primary hidden md:block" />
-          <span className="text-xl sm:text-2xl font-bold tracking-tight select-none" style={{ fontFamily: "'Playfair Display', serif", color: "#c0152a", letterSpacing: "-0.02em" }}>
+          <span className="text-xl sm:text-2xl font-bold tracking-tight select-none" style={{ fontFamily: "'Playfair Display', serif", color: "var(--primary)", letterSpacing: "-0.02em" }}>
             Bi-Bip
           </span>
           <span className="text-xs text-muted-foreground mt-1 hidden sm:block" style={{ fontFamily: "'DM Mono', monospace" }}>biblioteca privada</span>
@@ -1151,6 +1211,7 @@ export default function App() {
           {navBtn("catalog", <BookOpen size={14} />, "Catálogo")}
           {navBtn("add", <Plus size={14} />, "Cadastrar")}
           {navBtn("tags", <Tag size={14} />, "Tags")}
+          {navBtn("settings", <Settings size={14} />, "Configurações")}
         </nav>
 
         <div className="flex items-center gap-2 sm:gap-3 text-xs sm:text-sm text-muted-foreground">
@@ -1179,22 +1240,22 @@ export default function App() {
               </div>
               <button onClick={() => setDrawerOpen(false)} className="text-muted-foreground hover:text-foreground p-1"><X size={18} /></button>
             </div>
-            <div className="flex-1 overflow-y-auto">
+            <div className="flex flex-1 min-h-0 flex-col overflow-y-auto overscroll-contain">
               <SidebarContent {...sidebarProps} onClose={() => setDrawerOpen(false)} />
             </div>
           </aside>
         </div>
       )}
 
-      <div className="flex flex-1 overflow-hidden">
+      <div className="flex flex-1 min-h-0 overflow-hidden">
         {/* Desktop sidebar */}
         {view === "catalog" && (
-          <aside className="hidden md:flex w-64 shrink-0 bg-sidebar border-r border-sidebar-border flex-col">
+          <aside className="hidden md:flex w-64 min-h-0 shrink-0 bg-sidebar border-r border-sidebar-border flex-col overflow-hidden">
             <SidebarContent {...sidebarProps} />
           </aside>
         )}
 
-        <main className="flex-1 overflow-y-auto">
+        <main className="flex-1 min-h-0 overflow-y-auto">
           {/* ── Catalog ── */}
           {view === "catalog" && (
             <div className="px-4 sm:px-6 py-4 sm:py-6">
@@ -1325,6 +1386,7 @@ export default function App() {
                 description: editingBook.description,
                 featured: editingBook.featured,
                 tagIds: editingBook.tagIds,
+                format: editingBook.format || "Físico", location: editingBook.location || "", borrowedBy: editingBook.borrowedBy || "", notes: editingBook.notes || "",
               }}
               onSubmit={handleEdit}
               onCancel={() => { setView("catalog"); setEditingBook(null); }}
@@ -1335,6 +1397,32 @@ export default function App() {
           )}
 
           {view === "tags" && <TagsPage tags={tags} books={books} onReload={async () => { await reloadTags(); await reloadBooks(); }} />}
+          {view === "settings" && (
+            <section className="max-w-2xl mx-auto px-4 sm:px-6 py-8 w-full">
+              <h1 className="text-2xl font-bold mb-2">Configurações</h1>
+              <p className="text-sm text-muted-foreground mb-6">Escolha onde guardar a biblioteca e as capas. Uma cópia dos dados será levada para o novo local e o Bi-Bip será reiniciado.</p>
+              <div className="bg-card border border-border rounded-2xl p-5 space-y-4">
+                <div>
+                  <h2 className="font-semibold">Paleta de cores</h2>
+                  <p className="text-sm text-muted-foreground mt-1">Escolha a cor principal do Bi-Bip. A opção padrão é laranja.</p>
+                  <div className="flex flex-wrap gap-3 mt-4">
+                    {COLOR_PALETTES.map((palette) => (
+                      <button key={palette.id} onClick={() => setPaletteId(palette.id)} aria-pressed={paletteId === palette.id} className={`flex items-center gap-2.5 rounded-xl border px-3.5 py-2.5 text-sm font-medium transition-all ${paletteId === palette.id ? "border-foreground ring-2 ring-offset-2 ring-offset-card" : "border-border hover:bg-accent"}`} style={paletteId === palette.id ? { borderColor: palette.color, "--tw-ring-color": palette.color } as React.CSSProperties : undefined}>
+                        <span className="w-4 h-4 rounded-full" style={{ backgroundColor: palette.color }} />
+                        {palette.name}
+                        {paletteId === palette.id && <CheckCheck size={14} style={{ color: palette.color }} />}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+              <div className="bg-card border border-border rounded-2xl p-5 space-y-4">
+                <h2 className="font-semibold">Local de armazenamento</h2>
+                <p className="text-sm text-muted-foreground break-all">{storagePath}</p>
+                <button onClick={async () => { const selected = await window.api.settings.chooseStoragePath(); if (selected) setStoragePath(selected); }} className="px-4 py-2.5 rounded-xl bg-primary text-primary-foreground text-sm font-semibold">Escolher pasta</button>
+              </div>
+            </section>
+          )}
         </main>
       </div>
 
@@ -1359,6 +1447,11 @@ export default function App() {
                   <h2 className="text-lg sm:text-xl font-bold text-foreground leading-tight" style={{ fontFamily: "'Playfair Display', serif" }}>{selectedBook.title}</h2>
                   <p className="text-sm text-muted-foreground mt-0.5">{selectedBook.author}</p>
                 </div>
+                <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
+                  <span className="px-2 py-1 rounded-lg bg-secondary">{selectedBook.format || "Físico"}</span>
+                  {selectedBook.location && <span className="px-2 py-1 rounded-lg bg-secondary">Local: {selectedBook.location}</span>}
+                  {selectedBook.borrowedBy && <span className="px-2 py-1 rounded-lg bg-secondary">Emprestado para: {selectedBook.borrowedBy}</span>}
+                </div>
 
                 {selectedBook.tagIds.length > 0 && (
                   <div className="flex flex-wrap gap-1.5">
@@ -1369,6 +1462,7 @@ export default function App() {
                 )}
 
                 <p className="text-sm text-foreground/80 leading-relaxed line-clamp-4">{selectedBook.description}</p>
+                {selectedBook.notes && <div className="rounded-xl bg-secondary/60 p-3"><p className="text-xs font-semibold text-muted-foreground mb-1">Informações e comentários</p><p className="text-sm whitespace-pre-wrap">{selectedBook.notes}</p></div>}
                 <div className="flex items-center gap-3 text-xs text-muted-foreground" style={{ fontFamily: "'DM Mono', monospace" }}>
                   <span className="flex items-center gap-1"><Star size={10} className="text-primary fill-primary" />{selectedBook.rating}</span>
                   {selectedBook.pages > 0 && <span>{selectedBook.pages} pág.</span>}

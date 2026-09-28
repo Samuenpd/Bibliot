@@ -2,7 +2,10 @@ const path = require("path");
 const { app } = require("electron");
 const { DatabaseSync } = require("node:sqlite");
 
-const DB_PATH = path.join(app.getPath("userData"), "biblioteca.db");
+const storageConfigPath = path.join(app.getPath("userData"), "storage.json");
+let storageRoot = app.getPath("userData");
+try { storageRoot = JSON.parse(require("fs").readFileSync(storageConfigPath, "utf8")).path || storageRoot; } catch {}
+const DB_PATH = path.join(storageRoot, "biblioteca.db");
 
 const db = new DatabaseSync(DB_PATH);
 db.exec("PRAGMA journal_mode = DELETE;");
@@ -49,6 +52,17 @@ db.exec(`
   );
 `);
 
+// Migração segura para instalações que já têm a biblioteca criada.
+const bookColumns = new Set(db.prepare("PRAGMA table_info(books)").all().map((column) => column.name));
+for (const [name, definition] of [["format", "TEXT NOT NULL DEFAULT 'Físico'"], ["location", "TEXT NOT NULL DEFAULT ''"], ["borrowed_by", "TEXT NOT NULL DEFAULT ''"], ["notes", "TEXT NOT NULL DEFAULT ''"]]) {
+  if (!bookColumns.has(name)) db.exec(`ALTER TABLE books ADD COLUMN ${name} ${definition}`);
+}
+for (const tag of [{ name: "Laura", color: "#d97148" }, { name: "Silvia", color: "#e8a0a8" }]) {
+  if (!db.prepare("SELECT id FROM tags WHERE name = ? COLLATE NOCASE").get(tag.name)) {
+    db.prepare("INSERT INTO tags (name, color) VALUES (?, ?)").run(tag.name, tag.color);
+  }
+}
+
 // ── Helpers ──────────────────────────────────────────────────────────────
 
 function rowToBook(row, tagIdsByBook) {
@@ -66,6 +80,10 @@ function rowToBook(row, tagIdsByBook) {
     isRead: !!row.is_read,
     isFavorite: !!row.is_favorite,
     tagIds: tagIdsByBook.get(row.id) || [],
+    format: row.format || "Físico",
+    location: row.location || "",
+    borrowedBy: row.borrowed_by || "",
+    notes: row.notes || "",
   };
 }
 
@@ -90,8 +108,8 @@ const booksApi = {
 
   add(data) {
     const insert = db.prepare(`
-      INSERT INTO books (title, author, genre, year, rating, pages, cover, description, featured)
-      VALUES (@title, @author, @genre, @year, @rating, @pages, @cover, @description, @featured)
+      INSERT INTO books (title, author, genre, year, rating, pages, cover, description, featured, format, location, borrowed_by, notes)
+      VALUES (@title, @author, @genre, @year, @rating, @pages, @cover, @description, @featured, @format, @location, @borrowed_by, @notes)
     `);
     let bookId;
     runInTransaction(() => {
@@ -105,6 +123,7 @@ const booksApi = {
         cover: data.cover || "",
         description: data.description || "",
         featured: data.featured ? 1 : 0,
+        format: data.format || "Físico", location: data.location || "", borrowed_by: data.borrowedBy || "", notes: data.notes || "",
       });
       bookId = info.lastInsertRowid;
       const insertTag = db.prepare("INSERT INTO book_tags (book_id, tag_id) VALUES (?, ?)");
@@ -117,7 +136,8 @@ const booksApi = {
     runInTransaction(() => {
       db.prepare(`
         UPDATE books SET title=@title, author=@author, genre=@genre, year=@year, rating=@rating,
-          pages=@pages, cover=@cover, description=@description, featured=@featured
+          pages=@pages, cover=@cover, description=@description, featured=@featured,
+          format=@format, location=@location, borrowed_by=@borrowed_by, notes=@notes
         WHERE id=@id
       `).run({
         id,
@@ -130,6 +150,7 @@ const booksApi = {
         cover: data.cover || "",
         description: data.description || "",
         featured: data.featured ? 1 : 0,
+        format: data.format || "Físico", location: data.location || "", borrowed_by: data.borrowedBy || "", notes: data.notes || "",
       });
       db.prepare("DELETE FROM book_tags WHERE book_id = ?").run(id);
       const insertTag = db.prepare("INSERT INTO book_tags (book_id, tag_id) VALUES (?, ?)");

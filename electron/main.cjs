@@ -51,7 +51,9 @@ function createWindow() {
 // ── Helpers de imagem ────────────────────────────────────────────────────────
 
 function ensureCoversDir() {
-  coversDir = path.join(app.getPath("userData"), "covers");
+  let storageRoot = app.getPath("userData");
+  try { storageRoot = JSON.parse(fs.readFileSync(path.join(app.getPath("userData"), "storage.json"), "utf8")).path || storageRoot; } catch {}
+  coversDir = path.join(storageRoot, "covers");
   if (!fs.existsSync(coversDir)) {
     fs.mkdirSync(coversDir, { recursive: true });
   }
@@ -145,6 +147,31 @@ app.whenReady().then(() => {
   ipcMain.handle("tags:add", wrap((_e, data) => tagsApi.add(data)));
   ipcMain.handle("tags:update", wrap((_e, id, data) => tagsApi.update(id, data)));
   ipcMain.handle("tags:delete", wrap((_e, id) => tagsApi.delete(id)));
+  const configuredStoragePath = () => {
+    try { return JSON.parse(fs.readFileSync(path.join(app.getPath("userData"), "storage.json"), "utf8")).path || null; }
+    catch { return null; }
+  };
+  const storageRoot = () => configuredStoragePath() || app.getPath("userData");
+  ipcMain.handle("settings:getStoragePath", wrap(() => configuredStoragePath()));
+  ipcMain.handle("settings:chooseStoragePath", wrap(async () => {
+    const result = await dialog.showOpenDialog({ title: "Escolher pasta do acervo", properties: ["openDirectory", "createDirectory"] });
+    if (result.canceled || !result.filePaths[0]) return null;
+    const destination = result.filePaths[0];
+    const current = storageRoot();
+    if (path.resolve(destination) !== path.resolve(current)) {
+      fs.mkdirSync(destination, { recursive: true });
+      for (const name of ["biblioteca.db", "biblioteca.db-wal", "biblioteca.db-shm"]) {
+        const from = path.join(current, name);
+        if (fs.existsSync(from)) fs.copyFileSync(from, path.join(destination, name));
+      }
+      const fromCovers = path.join(current, "covers");
+      if (fs.existsSync(fromCovers)) fs.cpSync(fromCovers, path.join(destination, "covers"), { recursive: true });
+    }
+    fs.writeFileSync(path.join(app.getPath("userData"), "storage.json"), JSON.stringify({ path: destination }, null, 2));
+    app.relaunch();
+    app.quit();
+    return destination;
+  }));
 
   // ── Rotas de imagem ─────────────────────────────────────────────────
   ipcMain.handle("download-image-from-url", wrap((_e, url) => downloadImageFromUrl(url)));
