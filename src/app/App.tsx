@@ -25,6 +25,7 @@ const COLOR_PALETTES = [
   { id: "red", name: "Vermelha", color: "#c0152a", border: "rgba(192, 21, 42, 0.12)" },
   { id: "cyan", name: "Ciano", color: "#0891b2", border: "rgba(8, 145, 178, 0.16)" },
   { id: "green", name: "Verde", color: "#16834a", border: "rgba(22, 131, 74, 0.16)" },
+  { id: "purple", name: "Roxo", color: "#560983", border: "rgba(57, 5, 97, 0.16)" },
 ];
 
 declare global {
