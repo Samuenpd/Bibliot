@@ -142,6 +142,13 @@ app.whenReady().then(() => {
   ipcMain.handle("books:delete", wrap((_e, id) => booksApi.delete(id)));
   ipcMain.handle("books:toggleRead", wrap((_e, id) => booksApi.toggleRead(id)));
   ipcMain.handle("books:toggleFavorite", wrap((_e, id) => booksApi.toggleFavorite(id)));
+  ipcMain.handle("books:getNotes", wrap((_e, bookId) => booksApi.getNotes(bookId)));
+  ipcMain.handle("books:addNote", wrap((_e, bookId, content) => booksApi.addNote(bookId, content)));
+  ipcMain.handle("books:updateNote", wrap((_e, id, content) => booksApi.updateNote(id, content)));
+  ipcMain.handle("books:deleteNote", wrap((_e, id) => booksApi.deleteNote(id)));
+  ipcMain.handle("books:getLoans", wrap((_e, bookId) => booksApi.getLoans(bookId)));
+  ipcMain.handle("books:addLoan", wrap((_e, bookId, borrower, lentAt, dueAt) => booksApi.addLoan(bookId, borrower, lentAt, dueAt)));
+  ipcMain.handle("books:returnLoan", wrap((_e, id) => booksApi.returnLoan(id)));
 
   ipcMain.handle("tags:getAll", wrap(() => tagsApi.getAll()));
   ipcMain.handle("tags:add", wrap((_e, data) => tagsApi.add(data)));

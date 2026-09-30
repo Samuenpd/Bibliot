@@ -9,6 +9,13 @@ contextBridge.exposeInMainWorld("api", {
     delete: (id) => ipcRenderer.invoke("books:delete", id),
     toggleRead: (id) => ipcRenderer.invoke("books:toggleRead", id),
     toggleFavorite: (id) => ipcRenderer.invoke("books:toggleFavorite", id),
+    getNotes: (bookId) => ipcRenderer.invoke("books:getNotes", bookId),
+    addNote: (bookId, content) => ipcRenderer.invoke("books:addNote", bookId, content),
+    updateNote: (id, content) => ipcRenderer.invoke("books:updateNote", id, content),
+    deleteNote: (id) => ipcRenderer.invoke("books:deleteNote", id),
+    getLoans: (bookId) => ipcRenderer.invoke("books:getLoans", bookId),
+    addLoan: (bookId, borrower, lentAt, dueAt) => ipcRenderer.invoke("books:addLoan", bookId, borrower, lentAt, dueAt),
+    returnLoan: (id) => ipcRenderer.invoke("books:returnLoan", id),
   },
   tags: {
     getAll: () => ipcRenderer.invoke("tags:getAll"),

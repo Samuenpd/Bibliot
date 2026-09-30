@@ -50,6 +50,23 @@ db.exec(`
     tag_id INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
     PRIMARY KEY (book_id, tag_id)
   );
+
+  CREATE TABLE IF NOT EXISTS book_notes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    book_id INTEGER NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+    content TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS book_loans (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    book_id INTEGER NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+    borrower TEXT NOT NULL,
+    lent_at TEXT NOT NULL,
+    due_at TEXT,
+    returned_at TEXT
+  );
 `);
 
 // Migração segura para instalações que já têm a biblioteca criada.
@@ -100,6 +117,46 @@ function getAllTagIdsByBook() {
 // ── API pública do "backend" ─────────────────────────────────────────────
 
 const booksApi = {
+  getLoans(bookId) {
+    return db.prepare("SELECT id, book_id AS bookId, borrower, lent_at AS lentAt, due_at AS dueAt, returned_at AS returnedAt FROM book_loans WHERE book_id = ? ORDER BY lent_at DESC, id DESC").all(bookId);
+  },
+  addLoan(bookId, borrower, lentAt, dueAt) {
+    if (db.prepare("SELECT id FROM book_loans WHERE book_id = ? AND returned_at IS NULL").get(bookId)) throw new Error("Este livro já possui um empréstimo em aberto.");
+    const info = db.prepare("INSERT INTO book_loans (book_id, borrower, lent_at, due_at) VALUES (?, ?, ?, ?)").run(bookId, borrower, lentAt, dueAt);
+    db.prepare("UPDATE books SET borrowed_by = ? WHERE id = ?").run(borrower, bookId);
+    return this.getLoan(info.lastInsertRowid);
+  },
+  getLoan(id) {
+    return db.prepare("SELECT id, book_id AS bookId, borrower, lent_at AS lentAt, due_at AS dueAt, returned_at AS returnedAt FROM book_loans WHERE id = ?").get(id);
+  },
+  returnLoan(id) {
+    const loan = this.getLoan(id);
+    if (!loan) throw new Error("Empréstimo não encontrado.");
+    if (!loan.returnedAt) {
+      const returnedAt = new Date().toISOString();
+      db.prepare("UPDATE book_loans SET returned_at = ? WHERE id = ?").run(returnedAt, id);
+      db.prepare("UPDATE books SET borrowed_by = '' WHERE id = ?").run(loan.bookId);
+    }
+    return this.getLoan(id);
+  },
+  getNotes(bookId) {
+    return db.prepare("SELECT id, book_id AS bookId, content, created_at AS createdAt, updated_at AS updatedAt FROM book_notes WHERE book_id = ? ORDER BY created_at DESC, id DESC").all(bookId);
+  },
+  addNote(bookId, content) {
+    const now = new Date().toISOString();
+    const info = db.prepare("INSERT INTO book_notes (book_id, content, created_at, updated_at) VALUES (?, ?, ?, ?)").run(bookId, content, now, now);
+    return this.getNote(info.lastInsertRowid);
+  },
+  getNote(id) {
+    return db.prepare("SELECT id, book_id AS bookId, content, created_at AS createdAt, updated_at AS updatedAt FROM book_notes WHERE id = ?").get(id);
+  },
+  updateNote(id, content) {
+    db.prepare("UPDATE book_notes SET content = ?, updated_at = ? WHERE id = ?").run(content, new Date().toISOString(), id);
+    return this.getNote(id);
+  },
+  deleteNote(id) {
+    db.prepare("DELETE FROM book_notes WHERE id = ?").run(id);
+  },
   getAll() {
     const rows = db.prepare("SELECT * FROM books ORDER BY id DESC").all();
     const tagIdsByBook = getAllTagIdsByBook();

@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect, useCallback } from "react"; //sammy
 import {
-  Search, BookOpen, Star, Heart, ChevronRight, Filter, X,
+  Search, BookOpen, Star, Heart, ChevronRight, Filter, X, StickyNote, Save, Handshake, CalendarDays,
   BookMarked, Plus, Upload, Pencil, CheckCheck, Menu, SlidersHorizontal,
   Tag, Trash2, AlertCircle, CheckCircle2, Info, ChevronDown, Settings,
 } from "lucide-react";
@@ -16,6 +16,8 @@ type Book = {
   isRead?: boolean; isFavorite?: boolean;
   format: string; location: string; borrowedBy: string; notes: string;
 };
+type BookNote = { id: number; bookId: number; content: string; createdAt: string; updatedAt: string };
+type BookLoan = { id: number; bookId: number; borrower: string; lentAt: string; dueAt: string | null; returnedAt: string | null };
 
 type View = "catalog" | "add" | "edit" | "tags" | "settings";
 type ReadFilter = "todos" | "lidos" | "nao-lidos";
@@ -38,6 +40,13 @@ declare global {
         delete: (id: number) => Promise<void>;
         toggleRead: (id: number) => Promise<void>;
         toggleFavorite: (id: number) => Promise<void>;
+        getNotes: (bookId: number) => Promise<BookNote[]>;
+        addNote: (bookId: number, content: string) => Promise<BookNote>;
+        updateNote: (id: number, content: string) => Promise<BookNote>;
+        deleteNote: (id: number) => Promise<void>;
+        getLoans: (bookId: number) => Promise<BookLoan[]>;
+        addLoan: (bookId: number, borrower: string, lentAt: string, dueAt: string | null) => Promise<BookLoan>;
+        returnLoan: (id: number) => Promise<BookLoan>;
       };
       tags: {
         getAll: () => Promise<TagDef[]>;
@@ -66,6 +75,10 @@ const TAG_COLORS = [
   { label: "Roxo", value: "#8b6bb1" },
   { label: "Marrom", value: "#8c6a58" },
 ];
+const formatLoanDate = (value: string) => {
+  const [year, month, day] = value.slice(0, 10).split("-");
+  return `${day}/${month}/${year}`;
+};
 
 const GENRES = ["Romance", "Realismo Mágico", "Mistério", "Suspense", "Ficção", "Fantasia", "Ficção Clássica", "Poesia", "Biografia", "História", "Ciência", "Drama", "Infantil", "Autoajuda", "Religião", "Quadrinhos", "Terror", "Aventura", "Outros"];
 
@@ -1049,6 +1062,15 @@ export default function App() {
   const [selectedTagId, setSelectedTagId] = useState<number | null>(null);
   const [readFilter, setReadFilter] = useState<ReadFilter>("todos");
   const [selectedBook, setSelectedBook] = useState<Book | null>(null);
+  const [bookNotes, setBookNotes] = useState<BookNote[]>([]);
+  const [bookLoans, setBookLoans] = useState<BookLoan[]>([]);
+  const [noteDraft, setNoteDraft] = useState("");
+  const [editingNoteId, setEditingNoteId] = useState<number | null>(null);
+  const [notesTab, setNotesTab] = useState(false);
+  const [loansTab, setLoansTab] = useState(false);
+  const [loanBorrower, setLoanBorrower] = useState("");
+  const [loanLentAt, setLoanLentAt] = useState(() => new Date().toISOString().slice(0, 10));
+  const [loanDueAt, setLoanDueAt] = useState("");
   const [view, setView] = useState<View>("catalog");
   const [editingBook, setEditingBook] = useState<Book | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -1067,6 +1089,60 @@ export default function App() {
 
   const reloadBooks = async () => setBooks(await window.api.books.getAll());
   const reloadTags = async () => setTags(await window.api.tags.getAll());
+
+  useEffect(() => {
+    setBookNotes([]);
+    setBookLoans([]);
+    setNoteDraft("");
+    setEditingNoteId(null);
+    setNotesTab(false);
+    setLoansTab(false);
+    setLoanBorrower("");
+    setLoanLentAt(new Date().toISOString().slice(0, 10));
+    setLoanDueAt("");
+    if (selectedBook) {
+      window.api.books.getNotes(selectedBook.id).then(setBookNotes);
+      window.api.books.getLoans(selectedBook.id).then(setBookLoans);
+    }
+  }, [selectedBook?.id]);
+
+  const saveBookNote = async () => {
+    const content = noteDraft.trim();
+    if (!content || !selectedBook) return;
+    const saved = editingNoteId
+      ? await window.api.books.updateNote(editingNoteId, content)
+      : await window.api.books.addNote(selectedBook.id, content);
+    setBookNotes((items) => editingNoteId
+      ? items.map((item) => item.id === saved.id ? saved : item)
+      : [saved, ...items]);
+    setNoteDraft("");
+    setEditingNoteId(null);
+  };
+
+  const removeBookNote = async (id: number) => {
+    await window.api.books.deleteNote(id);
+    setBookNotes((items) => items.filter((item) => item.id !== id));
+    if (editingNoteId === id) { setEditingNoteId(null); setNoteDraft(""); }
+  };
+
+  const addBookLoan = async () => {
+    if (!selectedBook || !loanBorrower.trim()) return;
+    const loan = await window.api.books.addLoan(selectedBook.id, loanBorrower.trim(), loanLentAt, loanDueAt || null);
+    setBookLoans((items) => [loan, ...items]);
+    setSelectedBook((book) => book ? { ...book, borrowedBy: loan.borrower } : book);
+    setBooks((items) => items.map((book) => book.id === loan.bookId ? { ...book, borrowedBy: loan.borrower } : book));
+    setLoanBorrower("");
+    setLoanDueAt("");
+  };
+
+  const markLoanReturned = async (id: number) => {
+    const loan = await window.api.books.returnLoan(id);
+    setBookLoans((items) => items.map((item) => item.id === id ? loan : item));
+    if (loan.returnedAt) {
+      setSelectedBook((book) => book ? { ...book, borrowedBy: "" } : book);
+      setBooks((items) => items.map((book) => book.id === loan.bookId ? { ...book, borrowedBy: "" } : book));
+    }
+  };
 
   useEffect(() => {
     (async () => {
@@ -1431,13 +1507,13 @@ export default function App() {
       {selectedBook && (
         <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center" onClick={() => setSelectedBook(null)}>
           <div className="absolute inset-0 bg-foreground/40 backdrop-blur-sm" />
-          <div className="relative bg-card w-full sm:max-w-lg sm:rounded-3xl rounded-t-3xl shadow-2xl overflow-hidden max-h-[92dvh] sm:max-h-[85dvh] flex flex-col" onClick={(e) => e.stopPropagation()}>
+          <div className="relative bg-card w-full sm:max-w-4xl sm:h-[36rem] sm:rounded-3xl rounded-t-3xl shadow-2xl overflow-hidden max-h-[92dvh] sm:max-h-[85dvh] flex flex-col" onClick={(e) => e.stopPropagation()}>
             <div className="flex justify-center pt-3 pb-1 sm:hidden shrink-0">
               <div className="w-10 h-1 rounded-full bg-border" />
             </div>
             <div className="flex flex-col sm:flex-row overflow-hidden flex-1 min-h-0">
-              <div className="w-full h-44 sm:w-44 sm:h-auto shrink-0 bg-accent">
-                <img src={selectedBook.cover} alt={selectedBook.title} className="w-full h-full object-cover" />
+              <div className="w-full h-44 sm:w-64 sm:h-96 shrink-0 bg-accent flex items-center justify-center">
+                <img src={selectedBook.cover} alt={selectedBook.title} className="w-full h-full object-contain" />
               </div>
               <div className="flex-1 p-5 sm:p-6 flex flex-col gap-3 overflow-y-auto">
                 <div className="flex justify-between items-start">
@@ -1462,8 +1538,42 @@ export default function App() {
                   </div>
                 )}
 
-                <p className="text-sm text-foreground/80 leading-relaxed line-clamp-4">{selectedBook.description}</p>
-                {selectedBook.notes && <div className="rounded-xl bg-secondary/60 p-3"><p className="text-xs font-semibold text-muted-foreground mb-1">Informações e comentários</p><p className="text-sm whitespace-pre-wrap">{selectedBook.notes}</p></div>}
+                <div className="flex gap-1 border-b border-border">
+                  <button onClick={() => { setNotesTab(false); setLoansTab(false); }} className={`px-3 py-2 text-xs font-semibold border-b-2 ${!notesTab && !loansTab ? "border-primary text-primary" : "border-transparent text-muted-foreground"}`}>Sobre o livro</button>
+                  <button onClick={() => { setNotesTab(true); setLoansTab(false); }} className={`px-3 py-2 text-xs font-semibold border-b-2 flex items-center gap-1.5 ${notesTab && !loansTab ? "border-primary text-primary" : "border-transparent text-muted-foreground"}`}><StickyNote size={13} /> Anotações <span className="rounded-full bg-secondary px-1.5 py-0.5 text-[10px]">{bookNotes.length}</span></button>
+                  <button onClick={() => { setNotesTab(false); setLoansTab(true); }} className={`px-3 py-2 text-xs font-semibold border-b-2 flex items-center gap-1.5 ${loansTab ? "border-primary text-primary" : "border-transparent text-muted-foreground"}`}><Handshake size={13} /> Empréstimos <span className="rounded-full bg-secondary px-1.5 py-0.5 text-[10px]">{bookLoans.filter((loan) => !loan.returnedAt).length}</span></button>
+                </div>
+                {!notesTab && !loansTab && <p className="text-sm text-foreground/80 leading-relaxed line-clamp-4">{selectedBook.description}</p>}
+                {!notesTab && !loansTab && selectedBook.notes && <div className="rounded-xl bg-secondary/60 p-3"><p className="text-xs font-semibold text-muted-foreground mb-1">Informações e comentários</p><p className="text-sm whitespace-pre-wrap">{selectedBook.notes}</p></div>}
+                {notesTab && !loansTab && <div className="flex flex-col gap-3">
+                  <div className="rounded-xl border border-amber-300/60 bg-amber-100/70 p-3 shadow-sm dark:bg-amber-950/20">
+                    <textarea value={noteDraft} onChange={(e) => setNoteDraft(e.target.value)} placeholder="Escreva uma anotação para este livro..." rows={3} className="w-full resize-y bg-transparent text-sm text-foreground placeholder:text-muted-foreground outline-none" />
+                    <div className="flex justify-between items-center mt-2">
+                      {editingNoteId ? <button onClick={() => { setEditingNoteId(null); setNoteDraft(""); }} className="text-xs text-muted-foreground hover:text-foreground">Cancelar edição</button> : <span className="text-[10px] text-muted-foreground">Suas anotações ficam salvas neste livro</span>}
+                      <button onClick={saveBookNote} disabled={!noteDraft.trim()} className="flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground disabled:opacity-40"><Save size={12} />{editingNoteId ? "Salvar" : "Adicionar"}</button>
+                    </div>
+                  </div>
+                  {bookNotes.length === 0 ? <p className="py-5 text-center text-xs text-muted-foreground">Nenhuma anotação ainda. Deixe seu primeiro post-it.</p> : <div className="flex flex-col gap-2">
+                    {bookNotes.map((note) => <article key={note.id} className="rounded-xl border border-amber-300/50 bg-amber-50/80 p-3 shadow-sm dark:bg-amber-950/15">
+                      <div className="mb-2 flex items-center justify-between gap-2"><time className="text-[10px] text-muted-foreground" title={new Date(note.updatedAt).toLocaleString("pt-BR")}>{new Date(note.updatedAt).toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" })}{note.updatedAt !== note.createdAt ? " · editada" : ""}</time><div className="flex gap-1"><button onClick={() => { setEditingNoteId(note.id); setNoteDraft(note.content); }} aria-label="Editar anotação" className="rounded-md p-1.5 text-muted-foreground hover:bg-secondary hover:text-foreground"><Pencil size={12} /></button><button onClick={() => removeBookNote(note.id)} aria-label="Excluir anotação" className="rounded-md p-1.5 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"><Trash2 size={12} /></button></div></div>
+                      <p className="whitespace-pre-wrap text-sm leading-relaxed">{note.content}</p>
+                    </article>)}
+                  </div>}
+                </div>}
+                {loansTab && <div className="flex flex-col gap-3">
+                  {bookLoans.some((loan) => !loan.returnedAt) ? <div className="rounded-xl border border-primary/25 bg-primary/5 p-3 text-xs text-foreground">Este livro está emprestado no momento. Marque a devolução antes de registrar outro empréstimo.</div> : <div className="rounded-xl border border-border bg-secondary/30 p-3">
+                    <p className="mb-3 text-xs font-semibold text-foreground">Registrar empréstimo</p>
+                    <label className="mb-2 block text-[10px] text-muted-foreground">Pessoa</label><input value={loanBorrower} onChange={(e) => setLoanBorrower(e.target.value)} placeholder="Nome de quem pegou o livro" className="mb-3 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary" />
+                    <div className="mb-3 grid grid-cols-2 gap-2"><label className="text-[10px] text-muted-foreground">Data do empréstimo<input type="date" value={loanLentAt} onChange={(e) => setLoanLentAt(e.target.value)} className="mt-1 w-full rounded-lg border border-border bg-background px-2 py-2 text-xs text-foreground" /></label><label className="text-[10px] text-muted-foreground">Previsão de devolução<input type="date" value={loanDueAt} onChange={(e) => setLoanDueAt(e.target.value)} min={loanLentAt} className="mt-1 w-full rounded-lg border border-border bg-background px-2 py-2 text-xs text-foreground" /></label></div>
+                    <button onClick={addBookLoan} disabled={!loanBorrower.trim() || !loanLentAt || (!!loanDueAt && loanDueAt < loanLentAt)} className="flex items-center gap-1.5 rounded-lg bg-primary px-3 py-2 text-xs font-semibold text-primary-foreground disabled:opacity-40"><Plus size={13} />Registrar</button>
+                  </div>}
+                  {bookLoans.length === 0 ? <p className="py-5 text-center text-xs text-muted-foreground">Nenhum empréstimo registrado para este livro.</p> : <div className="flex flex-col gap-2">
+                    {bookLoans.map((loan) => <article key={loan.id} className="rounded-xl border border-border bg-card p-3 shadow-sm">
+                      <div className="flex items-start justify-between gap-2"><div><p className="text-sm font-semibold">{loan.borrower}</p><p className="mt-1 text-[10px] text-muted-foreground">Saiu em {formatLoanDate(loan.lentAt)}{loan.dueAt ? ` · previsto ${formatLoanDate(loan.dueAt)}` : ""}</p>{loan.returnedAt && <p className="mt-1 text-[10px] text-muted-foreground">Devolvido em {new Date(loan.returnedAt).toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" })}</p>}</div>
+                        {loan.returnedAt ? <span className="rounded-full bg-secondary px-2 py-1 text-[10px] text-muted-foreground">Devolvido</span> : <button onClick={() => markLoanReturned(loan.id)} className="shrink-0 rounded-lg bg-primary/10 px-2.5 py-1.5 text-[10px] font-semibold text-primary hover:bg-primary/20">Marcar devolução</button>}</div>
+                    </article>)}
+                  </div>}
+                </div>}
                 <div className="flex items-center gap-3 text-xs text-muted-foreground" style={{ fontFamily: "'DM Mono', monospace" }}>
                   <span className="flex items-center gap-1"><Star size={10} className="text-primary fill-primary" />{selectedBook.rating}</span>
                   {selectedBook.pages > 0 && <span>{selectedBook.pages} pág.</span>}

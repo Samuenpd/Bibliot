@@ -17,6 +17,9 @@ function figmaAssetResolver() {
 }
 
 export default defineConfig({
+  // O Electron carrega a interface a partir de file://, então os assets
+  // precisam usar caminhos relativos em vez de /assets/... absolutos.
+  base: './',
   plugins: [
     figmaAssetResolver(),
     // The React and Tailwind plugins are both required for Make, even if
