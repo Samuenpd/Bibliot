@@ -15,6 +15,7 @@ type Book = {
   description: string; featured: boolean; tagIds: number[];
   isRead?: boolean; isFavorite?: boolean;
   format: string; location: string; borrowedBy: string; notes: string;
+  noteContents?: string[];
 };
 type BookNote = { id: number; bookId: number; content: string; createdAt: string; updatedAt: string };
 type BookLoan = { id: number; bookId: number; borrower: string; lentAt: string; dueAt: string | null; returnedAt: string | null };
@@ -56,6 +57,7 @@ declare global {
       };
       settings: { getStoragePath: () => Promise<string | null>; chooseStoragePath: () => Promise<string | null> };
       downloadImage: (url: string) => Promise<string>;
+      downloadBestImage: (urls: string[]) => Promise<string>;
       saveImageFromPath: (path: string) => Promise<string>;
       saveImageFromBuffer: (buffer: ArrayBuffer | Uint8Array) => Promise<string>;
       selectImage: () => Promise<string | null>;
@@ -80,7 +82,70 @@ const formatLoanDate = (value: string) => {
   return `${day}/${month}/${year}`;
 };
 
+const normalizeSearchText = (value: string) => value
+  .normalize("NFD")
+  .replace(/[\u0300-\u036f]/g, "")
+  .toLocaleLowerCase("pt-BR")
+  .replace(/[^a-z0-9]+/g, " ")
+  .trim();
+
+const editDistance = (left: string, right: string, limit = Number.POSITIVE_INFINITY) => {
+  if (Math.abs(left.length - right.length) > limit) return limit + 1;
+  let previous = Array.from({ length: right.length + 1 }, (_, index) => index);
+  let beforePrevious: number[] | null = null;
+  for (let i = 1; i <= left.length; i += 1) {
+    const current = [i];
+    let rowMinimum = i;
+    for (let j = 1; j <= right.length; j += 1) {
+      current[j] = Math.min(
+        current[j - 1] + 1,
+        previous[j] + 1,
+        previous[j - 1] + (left[i - 1] === right[j - 1] ? 0 : 1),
+      );
+      if (beforePrevious && i > 1 && j > 1 && left[i - 1] === right[j - 2] && left[i - 2] === right[j - 1]) {
+        current[j] = Math.min(current[j], beforePrevious[j - 2] + 1);
+      }
+      rowMinimum = Math.min(rowMinimum, current[j]);
+    }
+    if (rowMinimum > limit) return limit + 1;
+    beforePrevious = previous;
+    previous = current;
+  }
+  return previous[right.length];
+};
+
+const wordMatchesSearch = (queryWord: string, candidateWord: string) => {
+  if (candidateWord.includes(queryWord) || (queryWord.length >= 3 && candidateWord.startsWith(queryWord))) return true;
+  if (queryWord.length < 4) return false;
+
+  // Compara também contra o começo de palavras maiores. Assim uma busca ainda
+  // incompleta pode conter um pequeno erro sem precisar "alcançar" a palavra toda.
+  const allowedEdits = queryWord.length >= 10 ? 3 : queryWord.length >= 6 ? 2 : 1;
+  const minLength = Math.max(1, queryWord.length - allowedEdits);
+  const maxLength = Math.min(candidateWord.length, queryWord.length + allowedEdits);
+  let bestDistance = Number.POSITIVE_INFINITY;
+  for (let length = minLength; length <= maxLength; length += 1) {
+    bestDistance = Math.min(bestDistance, editDistance(queryWord, candidateWord.slice(0, length), allowedEdits));
+  }
+  const similarity = 1 - bestDistance / Math.max(queryWord.length, Math.min(candidateWord.length, queryWord.length + allowedEdits));
+  const requiredSimilarity = queryWord.length >= 9 ? 0.72 : queryWord.length >= 6 ? 0.7 : 0.78;
+  return bestDistance <= allowedEdits && similarity >= requiredSimilarity;
+};
+
+const bookMatchesSearch = (book: Book, rawQuery: string) => {
+  const query = normalizeSearchText(rawQuery);
+  if (!query) return true;
+  const searchable = normalizeSearchText([book.title, book.author, ...(book.noteContents || [])].join(" "));
+  if (searchable.includes(query)) return true;
+  const candidateWords = searchable.split(" ").filter(Boolean);
+  return query.split(" ").filter(Boolean).every((word) =>
+    candidateWords.some((candidate) => wordMatchesSearch(word, candidate)),
+  );
+};
+
 const GENRES = ["Romance", "Realismo Mágico", "Mistério", "Suspense", "Ficção", "Fantasia", "Ficção Clássica", "Poesia", "Biografia", "História", "Ciência", "Drama", "Infantil", "Autoajuda", "Religião", "Quadrinhos", "Terror", "Aventura", "Outros"];
+const MIN_SIDEBAR_WIDTH = 224;
+const MAX_SIDEBAR_WIDTH = 384;
 
 const EMPTY_FORM = {
   title: "", author: "", genre: "Romance",
@@ -288,13 +353,13 @@ function SidebarContent({
   tags: TagDef[]; onClose?: () => void;
 }) {
   return (
-    <div className="flex flex-1 min-h-0 flex-col gap-5 overflow-y-auto overscroll-contain p-5">
+    <div className="bibip-sidebar-scroll flex flex-1 min-h-0 flex-col gap-5 overflow-y-auto overscroll-contain p-5">
       <div>
         <label className="text-xs font-semibold text-muted-foreground uppercase tracking-widest mb-2 block" style={{ fontFamily: "'DM Mono', monospace" }}>Pesquisar</label>
-        <div className="relative">
+        <div className="relative min-w-0">
           <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
-          <input type="text" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Título ou autor..."
-            className="w-full bg-card border border-border rounded-lg pl-9 pr-8 py-2.5 text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary transition-all" />
+          <input type="text" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Título, autor ou anotação..."
+            className="bibip-search-input min-w-0 w-full bg-card border border-border rounded-lg pl-9 pr-8 py-2.5 text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary transition-all" />
           {search && <button onClick={() => setSearch("")} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"><X size={13} /></button>}
         </div>
       </div>
@@ -506,12 +571,13 @@ function BookForm({ initial, onSubmit, onCancel, isEdit, tags, onToast }: {
   };
 
   // Baixa a capa para armazenamento local. Se falhar, mantém a URL original.
-  const downloadCover = async (url: string): Promise<string> => {
-    if (!url) return "";
+  const downloadCover = async (urls: string | string[]): Promise<string> => {
+    const candidates = (Array.isArray(urls) ? urls : [urls]).filter(Boolean);
+    if (candidates.length === 0) return "";
     try {
-      return await window.api.downloadImage(url);
+      return await window.api.downloadBestImage(candidates);
     } catch {
-      return url; // fallback: mantém a URL da web
+      return candidates[0]; // fallback: mantém a melhor URL conhecida
     }
   };
 
@@ -537,6 +603,7 @@ function BookForm({ initial, onSubmit, onCancel, isEdit, tags, onToast }: {
         description: "",
         genre: "",
       };
+      const coverCandidates: string[] = [];
 
       // ── ETAPA 1: BrasilAPI ──
       try {
@@ -548,7 +615,7 @@ function BookForm({ initial, onSubmit, onCancel, isEdit, tags, onToast }: {
             acc.author = parseAuthors(brData.authors);
             acc.year = parseYear(brData.year || brData.published_date || "");
             acc.pages = brData.page_count ? String(brData.page_count) : "";
-            acc.cover = await downloadCover(brData.cover_url || brData.image || "");
+            if (brData.cover_url || brData.image) coverCandidates.push(brData.cover_url || brData.image);
             acc.description = brData.synopsis || brData.description || "";
           }
         }
@@ -557,7 +624,7 @@ function BookForm({ initial, onSubmit, onCancel, isEdit, tags, onToast }: {
       }
 
       // ── ETAPA 2: Google Books ISBN (preenche apenas lacunas) ──
-      if (!acc.author || !acc.year || !acc.cover || !acc.genre || !acc.title) {
+      if (!acc.author || !acc.year || !acc.genre || !acc.title || coverCandidates.length < 2) {
         try {
           const volume = await findVolumeWithCover(`isbn:${normalizedIsbn}`);
           if (volume) {
@@ -567,7 +634,7 @@ function BookForm({ initial, onSubmit, onCancel, isEdit, tags, onToast }: {
               const y = parseYear(volume.publishedDate || "");
               if (y) acc.year = y;
             }
-            if (!acc.cover && volume.imageLinks) acc.cover = await downloadCover(extractBestCover(volume.imageLinks));
+            if (volume.imageLinks) coverCandidates.push(...["extraLarge", "large", "medium", "thumbnail", "smallThumbnail"].map((key) => volume.imageLinks[key]).filter(Boolean));
             if (!acc.genre) acc.genre = mapGenre(volume.categories);
           }
         } catch {
@@ -576,7 +643,7 @@ function BookForm({ initial, onSubmit, onCancel, isEdit, tags, onToast }: {
       }
 
       // ── ETAPA 3: Google Books por Título (preenche apenas lacunas) ──
-      if ((acc.title && !acc.cover) || !acc.author || !acc.year) {
+      if (acc.title || !acc.author || !acc.year) {
         try {
           const q = [acc.title, acc.author].filter(Boolean).join(" ");
           const volumeTitle = await findVolumeWithCover(q || acc.title);
@@ -586,7 +653,7 @@ function BookForm({ initial, onSubmit, onCancel, isEdit, tags, onToast }: {
               const y = parseYear(volumeTitle.publishedDate || "");
               if (y) acc.year = y;
             }
-            if (!acc.cover && volumeTitle.imageLinks) acc.cover = await downloadCover(extractBestCover(volumeTitle.imageLinks));
+            if (volumeTitle.imageLinks) coverCandidates.push(...["extraLarge", "large", "medium", "thumbnail", "smallThumbnail"].map((key) => volumeTitle.imageLinks[key]).filter(Boolean));
             if (!acc.genre) acc.genre = mapGenre(volumeTitle.categories);
           }
         } catch {
@@ -595,25 +662,25 @@ function BookForm({ initial, onSubmit, onCancel, isEdit, tags, onToast }: {
       }
 
       // ── ETAPA 4: Open Library ISBN + busca por título (foco em capa/autor/ano) ──
-      if (!acc.cover) {
+      if (normalizedIsbn) {
         try {
           const olCoverUrl = `https://covers.openlibrary.org/b/isbn/${normalizedIsbn}-L.jpg?default=false`;
           const coverRes = await fetch(olCoverUrl, { method: "GET" });
           if (coverRes.ok && coverRes.headers.get("content-type")?.startsWith("image/")) {
-            acc.cover = await downloadCover(olCoverUrl);
+            coverCandidates.push(olCoverUrl);
           }
         } catch {
           // silencioso
         }
       }
 
-      if (!acc.cover && acc.title) {
+      if (acc.title) {
         try {
           const searchRes = await fetch(`https://openlibrary.org/search.json?q=${encodeURIComponent(acc.title)}`);
           if (searchRes.ok) {
             const searchData = await searchRes.json();
             const coverId = searchData?.docs?.[0]?.cover_i;
-            if (coverId) acc.cover = await downloadCover(`https://covers.openlibrary.org/b/id/${coverId}-L.jpg`);
+            if (coverId) coverCandidates.push(`https://covers.openlibrary.org/b/id/${coverId}-L.jpg`);
             if (!acc.author && searchData?.docs?.[0]?.author_name) acc.author = parseAuthors(searchData.docs[0].author_name);
             if (!acc.year) {
               const y = parseYear(searchData?.docs?.[0]?.first_publish_year || "");
@@ -624,6 +691,11 @@ function BookForm({ initial, onSubmit, onCancel, isEdit, tags, onToast }: {
           // silencioso
         }
       }
+
+      acc.cover = await downloadCover([...new Set(coverCandidates.map((url) => url
+        .replace(/^http:/, "https:")
+        .replace(/&edge=curl/g, "")
+        .replace(/zoom=\d+/, "zoom=3")))]);
 
       // inferência e fallbacks finais
       if (!acc.genre) acc.genre = inferGenreFromText(acc.title, acc.description);
@@ -1062,6 +1134,8 @@ export default function App() {
   const [selectedTagId, setSelectedTagId] = useState<number | null>(null);
   const [readFilter, setReadFilter] = useState<ReadFilter>("todos");
   const [selectedBook, setSelectedBook] = useState<Book | null>(null);
+  const [coverAspectRatio, setCoverAspectRatio] = useState(2 / 3);
+  const [viewportSize, setViewportSize] = useState(() => ({ width: window.innerWidth, height: window.innerHeight }));
   const [bookNotes, setBookNotes] = useState<BookNote[]>([]);
   const [bookLoans, setBookLoans] = useState<BookLoan[]>([]);
   const [noteDraft, setNoteDraft] = useState("");
@@ -1074,6 +1148,10 @@ export default function App() {
   const [view, setView] = useState<View>("catalog");
   const [editingBook, setEditingBook] = useState<Book | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [sidebarWidth, setSidebarWidth] = useState(() => {
+    const saved = Number(localStorage.getItem("bibip-sidebar-width"));
+    return Number.isFinite(saved) ? Math.min(MAX_SIDEBAR_WIDTH, Math.max(MIN_SIDEBAR_WIDTH, saved)) : 256;
+  });
 
   // Toast state
   const [toast, setToast] = useState<ToastData | null>(null);
@@ -1106,6 +1184,14 @@ export default function App() {
     }
   }, [selectedBook?.id]);
 
+  useEffect(() => {
+    const updateViewportSize = () => setViewportSize({ width: window.innerWidth, height: window.innerHeight });
+    window.addEventListener("resize", updateViewportSize);
+    return () => window.removeEventListener("resize", updateViewportSize);
+  }, []);
+
+  useEffect(() => setCoverAspectRatio(2 / 3), [selectedBook?.id]);
+
   const saveBookNote = async () => {
     const content = noteDraft.trim();
     if (!content || !selectedBook) return;
@@ -1117,12 +1203,14 @@ export default function App() {
       : [saved, ...items]);
     setNoteDraft("");
     setEditingNoteId(null);
+    await reloadBooks();
   };
 
   const removeBookNote = async (id: number) => {
     await window.api.books.deleteNote(id);
     setBookNotes((items) => items.filter((item) => item.id !== id));
     if (editingNoteId === id) { setEditingNoteId(null); setNoteDraft(""); }
+    await reloadBooks();
   };
 
   const addBookLoan = async () => {
@@ -1166,15 +1254,53 @@ export default function App() {
     localStorage.setItem("bibip-color-palette", palette.id);
   }, [paletteId]);
 
+  const startSidebarResize = (event: React.PointerEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    const startX = event.clientX;
+    const startWidth = sidebarWidth;
+    const previousCursor = document.body.style.cursor;
+    const previousUserSelect = document.body.style.userSelect;
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+    const move = (moveEvent: PointerEvent) => {
+      setSidebarWidth(Math.min(MAX_SIDEBAR_WIDTH, Math.max(MIN_SIDEBAR_WIDTH, startWidth + moveEvent.clientX - startX)));
+    };
+    const stop = () => {
+      document.body.style.cursor = previousCursor;
+      document.body.style.userSelect = previousUserSelect;
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", stop);
+      window.removeEventListener("pointercancel", stop);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", stop);
+    window.addEventListener("pointercancel", stop);
+  };
+
+  useEffect(() => {
+    localStorage.setItem("bibip-sidebar-width", String(Math.round(sidebarWidth)));
+  }, [sidebarWidth]);
+
   const filtered = useMemo(() => {
     return books.filter((b) => {
-      const matchesSearch = search === "" || b.title.toLowerCase().includes(search.toLowerCase()) || b.author.toLowerCase().includes(search.toLowerCase());
+      const matchesSearch = bookMatchesSearch(b, search);
       const matchesGenre = selectedGenre === "Todos" || b.genre === selectedGenre;
       const matchesRead = readFilter === "todos" || (readFilter === "lidos" && readBooks.includes(b.id)) || (readFilter === "nao-lidos" && !readBooks.includes(b.id));
       const matchesTag = selectedTagId === null || b.tagIds.includes(selectedTagId);
       return matchesSearch && matchesGenre && matchesRead && matchesTag;
     });
   }, [search, selectedGenre, readFilter, selectedTagId, readBooks, books]);
+
+  const detailModalSize = useMemo(() => {
+    const availableWidth = Math.max(0, viewportSize.width - 32);
+    const availableHeight = Math.max(0, viewportSize.height * 0.85);
+    const contentMinWidth = Math.min(360, availableWidth * 0.52);
+    const contentPreferredWidth = 576;
+    const height = Math.max(1, Math.min(640, availableHeight, (availableWidth - contentMinWidth) / coverAspectRatio));
+    const coverWidth = height * coverAspectRatio;
+    const contentWidth = Math.min(contentPreferredWidth, Math.max(contentMinWidth, availableWidth - coverWidth));
+    return { height, coverWidth, width: coverWidth + contentWidth };
+  }, [coverAspectRatio, viewportSize]);
 
   const featured = books.filter((b) => b.featured);
 
@@ -1327,8 +1453,23 @@ export default function App() {
       <div className="flex flex-1 min-h-0 overflow-hidden">
         {/* Desktop sidebar */}
         {view === "catalog" && (
-          <aside className="hidden md:flex w-64 min-h-0 shrink-0 bg-sidebar border-r border-sidebar-border flex-col overflow-hidden">
+          <aside style={{ width: sidebarWidth }} className="relative hidden md:flex min-h-0 shrink-0 bg-sidebar border-r border-sidebar-border flex-col overflow-visible">
             <SidebarContent {...sidebarProps} />
+            <div
+              role="separator"
+              aria-orientation="vertical"
+              aria-label="Redimensionar barra lateral"
+              onPointerDown={startSidebarResize}
+              onKeyDown={(event) => {
+                if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+                event.preventDefault();
+                setSidebarWidth((width) => Math.min(MAX_SIDEBAR_WIDTH, Math.max(MIN_SIDEBAR_WIDTH, width + (event.key === "ArrowRight" ? 16 : -16))));
+              }}
+              tabIndex={0}
+              className="group absolute inset-y-0 -right-1 z-10 w-2 cursor-col-resize touch-none outline-none"
+            >
+              <span className="absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-transparent transition-colors group-hover:bg-sidebar-primary/50 group-focus:bg-sidebar-primary group-active:bg-sidebar-primary" />
+            </div>
           </aside>
         )}
 
@@ -1507,13 +1648,28 @@ export default function App() {
       {selectedBook && (
         <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center" onClick={() => setSelectedBook(null)}>
           <div className="absolute inset-0 bg-foreground/40 backdrop-blur-sm" />
-          <div className="relative bg-card w-full sm:max-w-4xl sm:h-[36rem] sm:rounded-3xl rounded-t-3xl shadow-2xl overflow-hidden max-h-[92dvh] sm:max-h-[85dvh] flex flex-col" onClick={(e) => e.stopPropagation()}>
+          <div
+            className="relative bg-card w-full sm:w-[var(--detail-width)] sm:h-[var(--detail-height)] sm:max-w-[calc(100vw-2rem)] sm:rounded-3xl rounded-t-3xl shadow-2xl overflow-hidden max-h-[92dvh] flex flex-col"
+            style={{ "--detail-width": `${detailModalSize.width}px`, "--detail-height": `${detailModalSize.height}px` } as React.CSSProperties}
+            onClick={(e) => e.stopPropagation()}
+          >
             <div className="flex justify-center pt-3 pb-1 sm:hidden shrink-0">
               <div className="w-10 h-1 rounded-full bg-border" />
             </div>
             <div className="flex flex-col sm:flex-row overflow-hidden flex-1 min-h-0">
-              <div className="w-full h-44 sm:w-64 sm:h-96 shrink-0 bg-accent flex items-center justify-center">
-                <img src={selectedBook.cover} alt={selectedBook.title} className="w-full h-full object-contain" />
+              <div
+                className="relative w-full max-h-[38dvh] sm:h-full sm:max-h-none sm:w-[var(--cover-width)] sm:self-stretch shrink-0 bg-accent/60 overflow-hidden flex items-center justify-center"
+                style={{ "--cover-width": `${detailModalSize.coverWidth}px` } as React.CSSProperties}
+              >
+                <img
+                  src={selectedBook.cover}
+                  alt={selectedBook.title}
+                  onLoad={(event) => {
+                    const image = event.currentTarget;
+                    if (image.naturalWidth > 0 && image.naturalHeight > 0) setCoverAspectRatio(image.naturalWidth / image.naturalHeight);
+                  }}
+                  className="block max-h-[38dvh] w-auto max-w-full sm:max-h-none sm:w-full sm:h-full sm:max-w-none object-contain sm:object-fill"
+                />
               </div>
               <div className="flex-1 p-5 sm:p-6 flex flex-col gap-3 overflow-y-auto">
                 <div className="flex justify-between items-start">

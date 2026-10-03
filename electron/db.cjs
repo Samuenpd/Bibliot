@@ -114,6 +114,16 @@ function getAllTagIdsByBook() {
   return map;
 }
 
+function getAllNoteContentsByBook() {
+  const rows = db.prepare("SELECT book_id, content FROM book_notes ORDER BY created_at DESC, id DESC").all();
+  const map = new Map();
+  rows.forEach((row) => {
+    if (!map.has(row.book_id)) map.set(row.book_id, []);
+    map.get(row.book_id).push(row.content);
+  });
+  return map;
+}
+
 // ── API pública do "backend" ─────────────────────────────────────────────
 
 const booksApi = {
@@ -160,7 +170,11 @@ const booksApi = {
   getAll() {
     const rows = db.prepare("SELECT * FROM books ORDER BY id DESC").all();
     const tagIdsByBook = getAllTagIdsByBook();
-    return rows.map((r) => rowToBook(r, tagIdsByBook));
+    const noteContentsByBook = getAllNoteContentsByBook();
+    return rows.map((r) => ({
+      ...rowToBook(r, tagIdsByBook),
+      noteContents: noteContentsByBook.get(r.id) || [],
+    }));
   },
 
   add(data) {

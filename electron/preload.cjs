@@ -28,6 +28,7 @@ contextBridge.exposeInMainWorld("api", {
     chooseStoragePath: () => ipcRenderer.invoke("settings:chooseStoragePath"),
   },
   downloadImage: (url) => ipcRenderer.invoke("download-image-from-url", url),
+  downloadBestImage: (urls) => ipcRenderer.invoke("download-best-image", urls),
   saveImageFromPath: (path) => ipcRenderer.invoke("save-image-from-path", path),
   saveImageFromBuffer: (buffer) => ipcRenderer.invoke("save-image-from-buffer", buffer),
   selectImage: () => ipcRenderer.invoke("select-image-dialog"),

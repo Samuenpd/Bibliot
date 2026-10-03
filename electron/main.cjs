@@ -89,6 +89,43 @@ async function downloadImageFromUrl(url) {
   return saveBufferToCovers(buffer, ext);
 }
 
+function imageDimensions(buffer) {
+  if (buffer.length >= 24 && buffer.toString("ascii", 1, 4) === "PNG") {
+    return { width: buffer.readUInt32BE(16), height: buffer.readUInt32BE(20) };
+  }
+  if (buffer.length >= 4 && buffer[0] === 0xff && buffer[1] === 0xd8) {
+    let offset = 2;
+    while (offset + 9 < buffer.length) {
+      if (buffer[offset] !== 0xff) { offset += 1; continue; }
+      const marker = buffer[offset + 1];
+      const size = buffer.readUInt16BE(offset + 2);
+      if ([0xc0, 0xc1, 0xc2, 0xc3, 0xc5, 0xc6, 0xc7, 0xc9, 0xca, 0xcb, 0xcd, 0xce, 0xcf].includes(marker)) {
+        return { width: buffer.readUInt16BE(offset + 7), height: buffer.readUInt16BE(offset + 5) };
+      }
+      if (size < 2) break;
+      offset += size + 2;
+    }
+  }
+  return { width: 0, height: 0 };
+}
+
+async function downloadBestImage(urls) {
+  const candidates = await Promise.allSettled(urls.slice(0, 12).map(async (url) => {
+    const res = await fetch(url);
+    if (!res.ok || !res.headers.get("content-type")?.startsWith("image/")) throw new Error(`Capa inválida: ${url}`);
+    const buffer = Buffer.from(await res.arrayBuffer());
+    const dimensions = imageDimensions(buffer);
+    return { buffer, contentType: res.headers.get("content-type") || "", score: dimensions.width * dimensions.height || buffer.length };
+  }));
+  const best = candidates
+    .filter((candidate) => candidate.status === "fulfilled")
+    .map((candidate) => candidate.value)
+    .sort((a, b) => b.score - a.score)[0];
+  if (!best) throw new Error("Nenhuma capa válida foi encontrada.");
+  const ext = best.contentType.includes("png") ? ".png" : best.contentType.includes("webp") ? ".webp" : best.contentType.includes("gif") ? ".gif" : ".jpg";
+  return saveBufferToCovers(best.buffer, ext);
+}
+
 function copyFileToCovers(srcPath) {
   const dir = ensureCoversDir();
   const ext = path.extname(srcPath).toLowerCase() || ".jpg";
@@ -182,6 +219,7 @@ app.whenReady().then(() => {
 
   // ── Rotas de imagem ─────────────────────────────────────────────────
   ipcMain.handle("download-image-from-url", wrap((_e, url) => downloadImageFromUrl(url)));
+  ipcMain.handle("download-best-image", wrap((_e, urls) => downloadBestImage(urls)));
   ipcMain.handle("save-image-from-path", wrap((_e, filePath) => copyFileToCovers(filePath)));
   ipcMain.handle("save-image-from-buffer", wrap((_e, buffer) => {
     const buf = Buffer.from(buffer);
