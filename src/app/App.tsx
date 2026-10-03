@@ -1,7 +1,7 @@
 import { useState, useMemo, useEffect, useCallback } from "react"; //sammy
 import {
   Search, BookOpen, Star, Heart, ChevronRight, Filter, X, StickyNote, Save, Handshake, CalendarDays,
-  BookMarked, Plus, Upload, Pencil, CheckCheck, Menu, SlidersHorizontal,
+  Plus, Upload, Pencil, CheckCheck, Menu, SlidersHorizontal,
   Tag, Trash2, AlertCircle, CheckCircle2, Info, ChevronDown, Settings,
 } from "lucide-react";
 
@@ -24,11 +24,11 @@ type View = "catalog" | "add" | "edit" | "tags" | "settings";
 type ReadFilter = "todos" | "lidos" | "nao-lidos";
 type ToastData = { message: string; type: "success" | "error" | "info" };
 const COLOR_PALETTES = [
-  { id: "orange", name: "Laranja", color: "#e87924", border: "rgba(232, 121, 36, 0.16)" },
-  { id: "red", name: "Vermelha", color: "#c0152a", border: "rgba(192, 21, 42, 0.12)" },
-  { id: "cyan", name: "Ciano", color: "#0891b2", border: "rgba(8, 145, 178, 0.16)" },
-  { id: "green", name: "Verde", color: "#16834a", border: "rgba(22, 131, 74, 0.16)" },
-  { id: "purple", name: "Roxo", color: "#560983", border: "rgba(57, 5, 97, 0.16)" },
+  { id: "orange", name: "Laranja", color: "#e87924", bookmark: "#c94135", border: "rgba(232, 121, 36, 0.16)" },
+  { id: "red", name: "Vermelha", color: "#c0152a", bookmark: "#e87924", border: "rgba(192, 21, 42, 0.12)" },
+  { id: "cyan", name: "Ciano", color: "#0891b2", bookmark: "#d15b42", border: "rgba(8, 145, 178, 0.16)" },
+  { id: "green", name: "Verde", color: "#16834a", bookmark: "#d97148", border: "rgba(22, 131, 74, 0.16)" },
+  { id: "purple", name: "Roxo", color: "#560983", bookmark: "#e87924", border: "rgba(57, 5, 97, 0.16)" },
 ];
 
 declare global {
@@ -242,6 +242,17 @@ const findVolumeWithCover = async (isbnQuery: string): Promise<Record<string, an
 };
 
 // ── Small components ────────────────────────────────────────────────────────
+
+function BibipMark({ accent, bookmark, className }: { accent: string; bookmark: string; className?: string }) {
+  return (
+    <svg viewBox="32 52 192 165" aria-hidden="true" className={className}>
+      <path fill={accent} d="M38 76c0-9 7-16 16-16 30 0 55 6 74 20 19-14 44-20 74-20 9 0 16 7 16 16v104c0 10-9 18-19 16-27-4-49 1-71 17-22-16-44-21-71-17-10 2-19-6-19-16V76Z" />
+      <path fill={bookmark} d="M124 78h8v124l-4-4-4 4V78Z" />
+      <path fill="#FFF3E3" d="M49 77c0-5 4-9 9-9 27 0 49 6 66 19v105c-18-11-39-15-64-12-6 1-11-4-11-10V77Zm158 0c0-5-4-9-9-9-27 0-49 6-66 19v105c18-11 39-15 64-12 6 1 11-4 11-10V77Z" />
+      <path fill="none" stroke="#6B4735" strokeWidth="7" strokeLinecap="round" strokeLinejoin="round" d="M69 96h19c13 0 21 6 21 15s-8 16-21 16H76m0 0h15c14 0 22 6 22 16s-8 16-22 16H69M187 96h-19c-13 0-21 6-21 15s8 16 21 16h12m0 0h-15c-14 0-22 6-22 16s8 16 22 16h22" />
+    </svg>
+  );
+}
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -1256,8 +1267,15 @@ export default function App() {
     root.style.setProperty("--sidebar-ring", palette.color);
     root.style.setProperty("--border", palette.border);
     root.style.setProperty("--sidebar-border", palette.border);
+    const favicon = document.querySelector<HTMLLinkElement>('link[rel="icon"]');
+    if (favicon) {
+      const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256"><rect width="256" height="256" rx="52" fill="#352116"/><path fill="${palette.color}" d="M38 76c0-9 7-16 16-16 30 0 55 6 74 20 19-14 44-20 74-20 9 0 16 7 16 16v104c0 10-9 18-19 16-27-4-49 1-71 17-22-16-44-21-71-17-10 2-19-6-19-16V76Z"/><path fill="${palette.bookmark}" d="M124 78h8v124l-4-4-4 4V78Z"/><path fill="#FFF3E3" d="M49 77c0-5 4-9 9-9 27 0 49 6 66 19v105c-18-11-39-15-64-12-6 1-11-4-11-10V77Zm158 0c0-5-4-9-9-9-27 0-49 6-66 19v105c18-11 39-15 64-12 6 1 11-4 11-10V77Z"/><path fill="none" stroke="#6B4735" stroke-width="7" stroke-linecap="round" stroke-linejoin="round" d="M69 96h19c13 0 21 6 21 15s-8 16-21 16H76m0 0h15c14 0 22 6 22 16s-8 16-22 16H69M187 96h-19c-13 0-21 6-21 15s8 16 21 16h12m0 0h-15c-14 0-22 6-22 16s8 16 22 16h22"/></svg>`;
+      favicon.href = `data:image/svg+xml,${encodeURIComponent(svg)}`;
+    }
     localStorage.setItem("bibip-color-palette", palette.id);
   }, [paletteId]);
+
+  const activePalette = COLOR_PALETTES.find((item) => item.id === paletteId) || COLOR_PALETTES[0];
 
   const startSidebarResize = (event: React.PointerEvent<HTMLDivElement>) => {
     event.preventDefault();
@@ -1389,7 +1407,7 @@ export default function App() {
     return (
       <div className="min-h-screen bg-background flex items-center justify-center px-4" style={{ fontFamily: "'Nunito', sans-serif" }}>
         <section className="w-full max-w-lg bg-card border border-border rounded-3xl p-7 sm:p-9 shadow-xl">
-          <BookMarked size={30} className="text-primary mb-4" />
+          <BibipMark accent={activePalette.color} bookmark={activePalette.bookmark} className="mb-4 h-10 w-auto" />
           <h1 className="text-2xl sm:text-3xl font-bold text-foreground mb-2" style={{ fontFamily: "'Playfair Display', serif" }}>Onde salvar sua biblioteca?</h1>
           <p className="text-sm text-muted-foreground leading-relaxed mb-6">Antes de começar, escolha uma pasta para guardar seus livros e capas. Você pode escolher o HD externo agora e alterar esse local depois nas Configurações.</p>
           <button onClick={async () => { await window.api.settings.chooseStoragePath(); }} className="w-full px-4 py-3 rounded-xl bg-primary text-primary-foreground text-sm font-semibold hover:opacity-90 transition-opacity">Escolher pasta para salvar</button>
@@ -1408,7 +1426,7 @@ export default function App() {
               <Menu size={20} />
             </button>
           )}
-          <BookMarked size={18} className="text-primary hidden md:block" />
+          <BibipMark accent={activePalette.color} bookmark={activePalette.bookmark} className="hidden h-7 w-auto md:block" />
           <span className="text-xl sm:text-2xl font-bold tracking-tight select-none" style={{ fontFamily: "'Playfair Display', serif", color: "var(--primary)", letterSpacing: "-0.02em" }}>
             Bi-Bip
           </span>

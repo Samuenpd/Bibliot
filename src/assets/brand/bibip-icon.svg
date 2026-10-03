@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="title desc">
+  <title id="title">Bi-Bip</title>
+  <desc id="desc">Livro aberto cujas linhas de página sugerem discretamente o monograma BB.</desc>
+
+  <rect width="256" height="256" rx="52" fill="#352116"/>
+
+  <!-- A capa é uma única silhueta: o laranja aparece como contorno editorial. -->
+  <path fill="#E87924" d="M38 76c0-9 7-16 16-16 30 0 55 6 74 20 19-14 44-20 74-20 9 0 16 7 16 16v104c0 10-9 18-19 16-27-4-49 1-71 17-22-16-44-21-71-17-10 2-19-6-19-16V76Z"/>
+
+  <!-- O marcador acompanha a lombada inteira, estreito e atrás das páginas. -->
+  <path fill="#C94135" d="M124 78h8v124l-4-4-4 4V78Z"/>
+
+  <!-- As duas páginas compartilham a mesma linguagem e convergem numa lombada natural. -->
+  <path fill="#FFF3E3" d="M49 77c0-5 4-9 9-9 27 0 49 6 66 19v105c-18-11-39-15-64-12-6 1-11-4-11-10V77Zm158 0c0-5-4-9-9-9-27 0-49 6-66 19v105c18-11 39-15 64-12 6 1 11-4 11-10V77Z"/>
+
+  <!-- Curvas de leitura: parecem linhas de página antes de sugerirem dois Bs. -->
+  <path fill="none" stroke="#6B4735" stroke-width="7" stroke-linecap="round" stroke-linejoin="round" d="M69 96h19c13 0 21 6 21 15s-8 16-21 16H76m0 0h15c14 0 22 6 22 16s-8 16-22 16H69M187 96h-19c-13 0-21 6-21 15s8 16 21 16h12m0 0h-15c-14 0-22 6-22 16s8 16 22 16h22"/>
+</svg>

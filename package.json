@@ -7,6 +7,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "icons": "electron scripts/generate-icons.cjs",
     "electron:dev": "concurrently -k \"vite\" \"wait-on tcp:5173 && cross-env NODE_ENV=development electron .\"",
     "dist": "vite build && electron-builder",
     "dist:win": "vite build && electron-builder --win",
@@ -102,13 +103,15 @@
     "productName": "Bi-Bip",
     "files": [
       "dist/**/*",
-      "electron/**/*"
+      "electron/**/*",
+      "build/icons/**/*"
     ],
     "directories": {
       "output": "release"
     },
     "win": {
-      "target": "nsis"
+      "target": "nsis",
+      "icon": "build/icons/icon.ico"
     },
     "nsis": {
       "oneClick": false,
