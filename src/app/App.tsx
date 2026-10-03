@@ -404,8 +404,13 @@ function SidebarContent({
       <div>
         <label className="text-xs font-semibold text-muted-foreground uppercase tracking-widest mb-2 block" style={{ fontFamily: "'DM Mono', monospace" }}>Gênero</label>
         <div className="flex flex-col gap-1">
+          <button onClick={() => { setSelectedGenre("Todos"); onClose?.(); }}
+            className={`text-left px-3 py-2 rounded-lg text-sm transition-all flex items-center justify-between ${selectedGenre === "Todos" ? "bg-primary text-primary-foreground font-semibold" : "text-foreground hover:bg-accent"}`}>
+            <span>Todos os gêneros</span>
+            {selectedGenre === "Todos" && <ChevronRight size={13} />}
+          </button>
           {GENRES.map((g) => (
-            <button key={g} onClick={() => { setSelectedGenre(g); onClose?.(); }}
+            <button key={g} onClick={() => { setSelectedGenre(selectedGenre === g ? "Todos" : g); onClose?.(); }}
               className={`text-left px-3 py-2 rounded-lg text-sm transition-all flex items-center justify-between ${selectedGenre === g ? "bg-primary text-primary-foreground font-semibold" : "text-foreground hover:bg-accent"}`}>
               <span>{g}</span>
               {selectedGenre === g && <ChevronRight size={13} />}
