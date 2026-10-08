@@ -5,7 +5,7 @@ const crypto = require("crypto");
 const { pathToFileURL } = require("url");
 const { app, BrowserWindow, ipcMain, dialog, protocol, net } = require("electron");
 
-let db, booksApi, tagsApi;
+let library, booksApi, tagsApi, dataService;
 let coversDir;
 
 // Define o nome do app para que o diretório no AppData seja "Bi-Bip"
@@ -52,8 +52,7 @@ function createWindow() {
 // ── Helpers de imagem ────────────────────────────────────────────────────────
 
 function ensureCoversDir() {
-  let storageRoot = app.getPath("userData");
-  try { storageRoot = JSON.parse(fs.readFileSync(path.join(app.getPath("userData"), "storage.json"), "utf8")).path || storageRoot; } catch {}
+  const storageRoot = library?.storageRoot || app.getPath("userData");
   coversDir = path.join(storageRoot, "covers");
   if (!fs.existsSync(coversDir)) {
     fs.mkdirSync(coversDir, { recursive: true });
@@ -154,9 +153,19 @@ function registerCoverProtocol() {
 }
 
 app.whenReady().then(() => {
-  // O "backend" (SQLite) só pode ser inicializado depois que o app está pronto,
-  // pois depende de app.getPath("userData").
-  ({ db, booksApi, tagsApi } = require("./db.cjs"));
+  const { createLibrary } = require("./db.cjs");
+  const { createDataService } = require("./data-service.cjs");
+  const storageConfigPath = path.join(app.getPath("userData"), "storage.json");
+  const configuredStoragePath = () => { try { return JSON.parse(fs.readFileSync(storageConfigPath, "utf8")).path || null; } catch { return null; } };
+  const openLibrary = (root) => { library = createLibrary(root); booksApi = library.booksApi; tagsApi = library.tagsApi; coversDir = path.join(root, "covers"); };
+  const announceChange = () => BrowserWindow.getAllWindows().forEach(win => win.webContents.send("library:changed"));
+  const replaceLibrary = async (operation) => {
+    const root=library.storageRoot; library.db.exec("PRAGMA wal_checkpoint(TRUNCATE)"); library.close();
+    try { await operation(root); openLibrary(root); announceChange(); }
+    catch (error) { try { openLibrary(root); } catch {} throw error; }
+  };
+  openLibrary(configuredStoragePath() || app.getPath("userData"));
+  dataService=createDataService(()=>library,replaceLibrary);
 
   ensureCoversDir();
   registerCoverProtocol();
@@ -178,7 +187,10 @@ app.whenReady().then(() => {
   ipcMain.handle("books:add", wrap((_e, data) => booksApi.add(data)));
   ipcMain.handle("books:update", wrap((_e, id, data) => booksApi.update(id, data)));
   ipcMain.handle("books:delete", wrap((_e, id) => booksApi.delete(id)));
-  ipcMain.handle("books:toggleRead", wrap((_e, id) => booksApi.toggleRead(id)));
+  ipcMain.handle("books:findDuplicates", wrap((_e, data, excludeId) => booksApi.findDuplicates(data, excludeId)));
+  ipcMain.handle("books:getReadingSessions", wrap((_e, id) => booksApi.getReadingSessions(id)));
+  ipcMain.handle("books:updateReading", wrap((_e, id, data) => booksApi.updateReading(id, data)));
+  ipcMain.handle("books:startReread", wrap((_e, id, startedAt) => booksApi.startReread(id, startedAt)));
   ipcMain.handle("books:toggleFavorite", wrap((_e, id) => booksApi.toggleFavorite(id)));
   ipcMain.handle("books:getNotes", wrap((_e, bookId) => booksApi.getNotes(bookId)));
   ipcMain.handle("books:addNote", wrap((_e, bookId, content) => booksApi.addNote(bookId, content)));
@@ -192,31 +204,35 @@ app.whenReady().then(() => {
   ipcMain.handle("tags:add", wrap((_e, data) => tagsApi.add(data)));
   ipcMain.handle("tags:update", wrap((_e, id, data) => tagsApi.update(id, data)));
   ipcMain.handle("tags:delete", wrap((_e, id) => tagsApi.delete(id)));
-  const configuredStoragePath = () => {
-    try { return JSON.parse(fs.readFileSync(path.join(app.getPath("userData"), "storage.json"), "utf8")).path || null; }
-    catch { return null; }
-  };
-  const storageRoot = () => configuredStoragePath() || app.getPath("userData");
-  ipcMain.handle("settings:getStoragePath", wrap(() => configuredStoragePath()));
+  ipcMain.handle("settings:getStoragePath", wrap(() => library.storageRoot));
   ipcMain.handle("settings:chooseStoragePath", wrap(async () => {
     const result = await dialog.showOpenDialog({ title: "Escolher pasta do acervo", properties: ["openDirectory", "createDirectory"] });
     if (result.canceled || !result.filePaths[0]) return null;
     const destination = result.filePaths[0];
-    const current = storageRoot();
-    if (path.resolve(destination) !== path.resolve(current)) {
-      fs.mkdirSync(destination, { recursive: true });
-      for (const name of ["biblioteca.db", "biblioteca.db-wal", "biblioteca.db-shm"]) {
-        const from = path.join(current, name);
-        if (fs.existsSync(from)) fs.copyFileSync(from, path.join(destination, name));
-      }
-      const fromCovers = path.join(current, "covers");
-      if (fs.existsSync(fromCovers)) fs.cpSync(fromCovers, path.join(destination, "covers"), { recursive: true });
-    }
-    fs.writeFileSync(path.join(app.getPath("userData"), "storage.json"), JSON.stringify({ path: destination }, null, 2));
-    app.relaunch();
-    app.quit();
+    const current = library.storageRoot;
+    if (path.resolve(destination) === path.resolve(current)) return destination;
+    fs.mkdirSync(destination,{recursive:true});const probe=path.join(destination,`.bibip-write-${process.pid}`);fs.writeFileSync(probe,"ok");fs.unlinkSync(probe);
+    const existing=path.join(destination,"biblioteca.db");
+    let mode="copy";
+    if(fs.existsSync(existing)){const answer=await dialog.showMessageBox({type:"warning",title:"Biblioteca existente",message:"Já existe uma biblioteca nessa pasta.",detail:"Você pode usar a biblioteca existente. Nenhum arquivo será sobrescrito.",buttons:["Usar biblioteca existente","Cancelar"],defaultId:1,cancelId:1});if(answer.response!==0)return null;mode="existing";}
+    else {const answer=await dialog.showMessageBox({type:"question",title:"Transferir biblioteca",message:"Como deseja usar a nova pasta?",detail:"Copiar mantém os arquivos atuais como segurança.",buttons:["Copiar biblioteca atual","Criar biblioteca vazia","Cancelar"],defaultId:0,cancelId:2});if(answer.response===2)return null;mode=answer.response===0?"copy":"empty";}
+    library.db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+    if(mode==="copy"){fs.copyFileSync(library.dbPath,existing);const sourceCovers=path.join(current,"covers"),targetCovers=path.join(destination,"covers");if(fs.existsSync(sourceCovers))fs.cpSync(sourceCovers,targetCovers,{recursive:true});}
+    const candidate=createLibrary(destination);if(!candidate.integrityCheck()){candidate.close();throw new Error("A biblioteca no novo local não passou na validação.");}candidate.close();
+    library.close();
+    try { openLibrary(destination); fs.writeFileSync(storageConfigPath,JSON.stringify({path:destination},null,2)); }
+    catch(error){ openLibrary(current); throw error; }
+    announceChange();
     return destination;
   }));
+
+  ipcMain.handle("data:createBackup",wrap(async()=>{const result=await dialog.showSaveDialog({title:"Salvar backup completo",defaultPath:`Bi-Bip-backup-${new Date().toISOString().slice(0,10)}.zip`,filters:[{name:"Backup Bi-Bip",extensions:["zip"]}]});return result.canceled?null:dataService.createBackup(result.filePath);}));
+  ipcMain.handle("data:selectBackup",wrap(async()=>{const result=await dialog.showOpenDialog({title:"Selecionar backup",properties:["openFile"],filters:[{name:"Backup Bi-Bip",extensions:["zip"]}]});if(result.canceled)return null;return {file:result.filePaths[0],manifest:dataService.validateBackup(result.filePaths[0])};}));
+  ipcMain.handle("data:restoreBackup",wrap((_e,file)=>dataService.restoreBackup(String(file))));
+  ipcMain.handle("data:export",wrap(async(_e,format)=>{if(!["csv","json"].includes(format))throw new Error("Formato inválido.");const result=await dialog.showSaveDialog({title:`Exportar catálogo em ${format.toUpperCase()}`,defaultPath:`Bi-Bip-catalogo.${format}`,filters:[{name:format.toUpperCase(),extensions:[format]}]});if(result.canceled)return null;return format==="csv"?dataService.exportCsv(result.filePath):dataService.exportJson(result.filePath);}));
+  ipcMain.handle("data:selectImport",wrap(async()=>{const result=await dialog.showOpenDialog({title:"Importar catálogo",properties:["openFile"],filters:[{name:"Catálogo",extensions:["csv","json"]}]});return result.canceled?null:dataService.previewImport(result.filePaths[0]);}));
+  ipcMain.handle("data:previewImport",wrap((_e,file,mapping)=>dataService.previewImport(String(file),mapping||{})));
+  ipcMain.handle("data:confirmImport",wrap((_e,preview,selected)=>dataService.importRows(preview.rows,selected)));
 
   // ── Rotas de imagem ─────────────────────────────────────────────────
   ipcMain.handle("download-image-from-url", wrap((_e, url) => downloadImageFromUrl(url)));
@@ -246,9 +262,9 @@ app.whenReady().then(() => {
 });
 
 app.on("window-all-closed", () => {
-  if (db) {
+  if (library) {
     console.log("💾 Fechando o banco de dados...");
-    db.close();
+    library.close();
   }
   if (process.platform !== "darwin") app.quit();
 });

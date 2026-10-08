@@ -4,6 +4,7 @@ import {
   Plus, Upload, Pencil, CheckCheck, Menu, SlidersHorizontal,
   Tag, Trash2, AlertCircle, CheckCircle2, Info, ChevronDown, Settings,
 } from "lucide-react";
+import { DataManagement } from "./components/DataManagement";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -16,12 +17,17 @@ type Book = {
   isRead?: boolean; isFavorite?: boolean;
   format: string; location: string; borrowedBy: string; notes: string;
   noteContents?: string[];
+  isbn: string; edition: string; publisher: string;
+  readingStatus: "want_to_read" | "reading" | "completed";
+  currentPage: number; readingStartedAt: string | null; readingCompletedAt: string | null;
 };
+type ReadingSession = { id:number; bookId:number; startedAt:string|null; completedAt:string|null; currentPage:number; status:Book["readingStatus"] };
+type DuplicateMatch = { book:Book; confidence:"strong"|"probable"; reasons:string[] };
 type BookNote = { id: number; bookId: number; content: string; createdAt: string; updatedAt: string };
 type BookLoan = { id: number; bookId: number; borrower: string; lentAt: string; dueAt: string | null; returnedAt: string | null };
 
 type View = "catalog" | "add" | "edit" | "tags" | "settings";
-type ReadFilter = "todos" | "lidos" | "nao-lidos";
+type ReadFilter = "todos" | Book["readingStatus"];
 type ToastData = { message: string; type: "success" | "error" | "info" };
 const COLOR_PALETTES = [
   { id: "orange", name: "Laranja", color: "#e87924", bookmark: "#c94135", border: "rgba(232, 121, 36, 0.16)" },
@@ -39,7 +45,10 @@ declare global {
         add: (data: Omit<Book, "id">) => Promise<number>;
         update: (id: number, data: Omit<Book, "id">) => Promise<void>;
         delete: (id: number) => Promise<void>;
-        toggleRead: (id: number) => Promise<void>;
+        findDuplicates: (data: Partial<Book>, excludeId?: number | null) => Promise<DuplicateMatch[]>;
+        getReadingSessions: (id: number) => Promise<ReadingSession[]>;
+        updateReading: (id: number, data: {status:Book["readingStatus"];currentPage?:number;startedAt?:string|null;completedAt?:string|null}) => Promise<Book>;
+        startReread: (id:number, startedAt?:string) => Promise<Book>;
         toggleFavorite: (id: number) => Promise<void>;
         getNotes: (bookId: number) => Promise<BookNote[]>;
         addNote: (bookId: number, content: string) => Promise<BookNote>;
@@ -55,7 +64,9 @@ declare global {
         update: (id: number, data: Omit<TagDef, "id">) => Promise<void>;
         delete: (id: number) => Promise<void>;
       };
-      settings: { getStoragePath: () => Promise<string | null>; chooseStoragePath: () => Promise<string | null> };
+      settings: { getStoragePath: () => Promise<string>; chooseStoragePath: () => Promise<string | null> };
+      data: { createBackup:()=>Promise<string|null>; selectBackup:()=>Promise<{file:string;manifest:any}|null>; restoreBackup:(file:string)=>Promise<boolean>; exportCatalog:(format:"csv"|"json")=>Promise<string|null>; selectImport:()=>Promise<any>; previewImport:(file:string,mapping:Record<string,string>)=>Promise<any>; confirmImport:(preview:any,selected:number[])=>Promise<{imported:number;skipped:number}> };
+      onLibraryChanged: (callback:()=>void) => ()=>void;
       downloadImage: (url: string) => Promise<string>;
       downloadBestImage: (urls: string[]) => Promise<string>;
       saveImageFromPath: (path: string) => Promise<string>;
@@ -152,6 +163,7 @@ const EMPTY_FORM = {
   year: "", rating: "", pages: "",
   cover: "", description: "", featured: false, tagIds: [] as number[],
   format: "Físico", location: "", borrowedBy: "", notes: "",
+  isbn: "", edition: "", publisher: "",
 };
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -369,7 +381,7 @@ function SidebarContent({
         <label className="text-xs font-semibold text-muted-foreground uppercase tracking-widest mb-2 block" style={{ fontFamily: "'DM Mono', monospace" }}>Pesquisar</label>
         <div className="relative min-w-0">
           <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
-          <input type="text" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Título, autor ou anotação..."
+          <input data-bibip-search type="text" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Título, autor ou anotação..."
             className="bibip-search-input min-w-0 w-full bg-card border border-border rounded-lg pl-9 pr-8 py-2.5 text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary transition-all" />
           {search && <button onClick={() => setSearch("")} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"><X size={13} /></button>}
         </div>
@@ -378,7 +390,7 @@ function SidebarContent({
       <div>
         <label className="text-xs font-semibold text-muted-foreground uppercase tracking-widest mb-2 block" style={{ fontFamily: "'DM Mono', monospace" }}>Leitura</label>
         <div className="flex flex-col gap-1">
-          {([{ key: "todos", label: "Todos" }, { key: "lidos", label: "Lidos" }, { key: "nao-lidos", label: "Não lidos" }] as { key: ReadFilter; label: string }[]).map(({ key, label }) => (
+          {([{ key: "todos", label: "Todos" }, { key: "want_to_read", label: "Quero ler" }, { key: "reading", label: "Lendo" }, { key: "completed", label: "Concluídos" }] as { key: ReadFilter; label: string }[]).map(({ key, label }) => (
             <button key={key} onClick={() => { setReadFilter(key); onClose?.(); }}
               className={`text-left px-3 py-2 rounded-lg text-sm transition-all flex items-center justify-between ${readFilter === key ? "bg-primary text-primary-foreground font-semibold" : "text-foreground hover:bg-accent"}`}>
               <span>{label}</span>
@@ -435,9 +447,9 @@ function SidebarContent({
         <div className="grid grid-cols-2 gap-2">
           {[
             { label: "Títulos", val: books.length },
-            { label: "Lidos", val: readBooks.length },
-            { label: "Favoritos", val: favorites.length },
-            { label: "Tags", val: tags.length },
+            { label: "Quero ler", val: books.filter(b=>b.readingStatus==="want_to_read").length },
+            { label: "Lendo", val: books.filter(b=>b.readingStatus==="reading").length },
+            { label: "Concluídos", val: books.filter(b=>b.readingStatus==="completed").length },
           ].map(({ label, val }) => (
             <div key={label} className="bg-card rounded-lg p-2.5 flex flex-col items-center gap-0.5">
               <span className="text-lg font-bold text-foreground leading-none">{val}</span>
@@ -462,7 +474,7 @@ function BookForm({ initial, onSubmit, onCancel, isEdit, tags, onToast }: {
 }) {
   const [form, setForm] = useState({ ...initial });
   const [saved, setSaved] = useState(false);
-  const [isbn, setIsbn] = useState("");
+  const [isbn, setIsbn] = useState(initial.isbn || "");
   const [isSearching, setIsSearching] = useState(false);
   const [isGenreOpen, setIsGenreOpen] = useState(false);
   const [isDragOver, setIsDragOver] = useState(false);
@@ -749,14 +761,14 @@ function BookForm({ initial, onSubmit, onCancel, isEdit, tags, onToast }: {
           description: acc.description || prev.description || "",
           genre: acc.genre || prev.genre,
         }));
-        setIsbn("");
+        setIsbn(normalizedIsbn);
         onToast("Dados do livro carregados e combinados com sucesso no Bi-Bip!", "success");
       } else {
-        setIsbn("");
+        setIsbn(normalizedIsbn);
         onToast("ISBN não encontrado nas bases de dados. Insira as informações manualmente.", "error");
       }
     } catch {
-      setIsbn("");
+      setIsbn(normalizedIsbn);
       onToast("ISBN não encontrado nas bases de dados. Insira as informações manualmente.", "error");
     } finally {
       setIsSearching(false);
@@ -766,7 +778,7 @@ function BookForm({ initial, onSubmit, onCancel, isEdit, tags, onToast }: {
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     setSaved(true);
-    setTimeout(() => { onSubmit(form); setSaved(false); }, 900);
+    setTimeout(() => { onSubmit({ ...form, isbn }); setSaved(false); }, 300);
   };
 
   return (
@@ -870,6 +882,11 @@ function BookForm({ initial, onSubmit, onCancel, isEdit, tags, onToast }: {
           <Field label="Ano">
             <input type="number" min={0} max={new Date().getFullYear()} value={form.year || ""} onChange={set("year")} className={inputCls} />
           </Field>
+        </div>
+
+        <div className="grid grid-cols-2 gap-3 sm:gap-4">
+          <Field label="Edição"><input type="text" value={form.edition} onChange={set("edition")} className={inputCls} placeholder="Ex: 2ª edição" /></Field>
+          <Field label="Editora"><input type="text" value={form.publisher} onChange={set("publisher")} className={inputCls} /></Field>
         </div>
 
         <div className="grid grid-cols-2 gap-3 sm:gap-4">
@@ -1154,6 +1171,8 @@ export default function App() {
   const [viewportSize, setViewportSize] = useState(() => ({ width: window.innerWidth, height: window.innerHeight }));
   const [bookNotes, setBookNotes] = useState<BookNote[]>([]);
   const [bookLoans, setBookLoans] = useState<BookLoan[]>([]);
+  const [readingSessions, setReadingSessions] = useState<ReadingSession[]>([]);
+  const [quickPage, setQuickPage] = useState("");
   const [noteDraft, setNoteDraft] = useState("");
   const [editingNoteId, setEditingNoteId] = useState<number | null>(null);
   const [notesTab, setNotesTab] = useState(false);
@@ -1177,6 +1196,7 @@ export default function App() {
 
   // Confirm delete dialog state
   const [confirmDelete, setConfirmDelete] = useState<Book | null>(null);
+  const [duplicatePrompt, setDuplicatePrompt] = useState<{matches:DuplicateMatch[];data:Omit<Book,"id">}|null>(null);
 
   const favorites = useMemo(() => books.filter((b) => b.isFavorite).map((b) => b.id), [books]);
   const readBooks = useMemo(() => books.filter((b) => b.isRead).map((b) => b.id), [books]);
@@ -1187,6 +1207,7 @@ export default function App() {
   useEffect(() => {
     setBookNotes([]);
     setBookLoans([]);
+    setReadingSessions([]);
     setNoteDraft("");
     setEditingNoteId(null);
     setNotesTab(false);
@@ -1197,6 +1218,8 @@ export default function App() {
     if (selectedBook) {
       window.api.books.getNotes(selectedBook.id).then(setBookNotes);
       window.api.books.getLoans(selectedBook.id).then(setBookLoans);
+      window.api.books.getReadingSessions(selectedBook.id).then(setReadingSessions);
+      setQuickPage(String(selectedBook.currentPage || 0));
     }
   }, [selectedBook?.id]);
 
@@ -1204,6 +1227,37 @@ export default function App() {
     const updateViewportSize = () => setViewportSize({ width: window.innerWidth, height: window.innerHeight });
     window.addEventListener("resize", updateViewportSize);
     return () => window.removeEventListener("resize", updateViewportSize);
+  }, []);
+
+  useEffect(() => {
+    const handleShortcut = (event: KeyboardEvent) => {
+      const modifier = event.ctrlKey || event.metaKey;
+      if (modifier && event.key.toLowerCase() === "f") {
+        event.preventDefault();
+        setView("catalog");
+        if (window.innerWidth < 768) setDrawerOpen(true);
+        window.setTimeout(() => {
+          const inputs = Array.from(document.querySelectorAll<HTMLInputElement>("[data-bibip-search]"));
+          (inputs.find((input) => input.offsetParent !== null) || inputs[0])?.focus();
+        }, 50);
+      } else if (modifier && event.key.toLowerCase() === "n") {
+        event.preventDefault();
+        setSelectedBook(null);
+        setEditingBook(null);
+        setView("add");
+      } else if (modifier && event.key === ",") {
+        event.preventDefault();
+        setSelectedBook(null);
+        setView("settings");
+      } else if (event.key === "Escape") {
+        setDuplicatePrompt(null);
+        setConfirmDelete(null);
+        setSelectedBook(null);
+        setDrawerOpen(false);
+      }
+    };
+    window.addEventListener("keydown", handleShortcut);
+    return () => window.removeEventListener("keydown", handleShortcut);
   }, []);
 
   useEffect(() => setCoverAspectRatio(2 / 3), [selectedBook?.id]);
@@ -1251,10 +1305,11 @@ export default function App() {
   useEffect(() => {
     (async () => {
       const savedPath = await window.api.settings.getStoragePath();
-      setStoragePath(savedPath || "");
-      if (savedPath) await Promise.all([reloadBooks(), reloadTags()]);
+      setStoragePath(savedPath);
+      await Promise.all([reloadBooks(), reloadTags()]);
       setLoading(false);
     })();
+    return window.api.onLibraryChanged(()=>{window.api.settings.getStoragePath().then(setStoragePath);Promise.all([reloadBooks(),reloadTags()]);});
   }, []);
 
   useEffect(() => {
@@ -1308,7 +1363,7 @@ export default function App() {
     return books.filter((b) => {
       const matchesSearch = bookMatchesSearch(b, search);
       const matchesGenre = selectedGenre === "Todos" || b.genre === selectedGenre;
-      const matchesRead = readFilter === "todos" || (readFilter === "lidos" && readBooks.includes(b.id)) || (readFilter === "nao-lidos" && !readBooks.includes(b.id));
+      const matchesRead = readFilter === "todos" || b.readingStatus === readFilter;
       const matchesTag = selectedTagId === null || b.tagIds.includes(selectedTagId);
       return matchesSearch && matchesGenre && matchesRead && matchesTag;
     });
@@ -1332,9 +1387,9 @@ export default function App() {
     await window.api.books.toggleFavorite(id);
   };
 
-  const toggleRead = async (id: number) => {
-    setBooks((prev) => prev.map((b) => b.id === id ? { ...b, isRead: !b.isRead } : b));
-    await window.api.books.toggleRead(id);
+  const updateReading = async (id:number,status:Book["readingStatus"],currentPage?:number) => {
+    try { const updated=await window.api.books.updateReading(id,{status,currentPage});setBooks(items=>items.map(book=>book.id===id?updated:book));setSelectedBook(book=>book?.id===id?updated:book);setReadingSessions(await window.api.books.getReadingSessions(id));showToast("Acompanhamento atualizado.","success"); }
+    catch(error){showToast(error instanceof Error?error.message:"Progresso inválido.","error");}
   };
 
   const toBookPayload = (data: typeof EMPTY_FORM): Omit<Book, "id"> => ({
@@ -1349,16 +1404,19 @@ export default function App() {
     featured: data.featured,
     tagIds: data.tagIds,
     format: data.format, location: data.location, borrowedBy: data.borrowedBy, notes: data.notes,
+    isbn:data.isbn,edition:data.edition,publisher:data.publisher,readingStatus:"want_to_read",currentPage:0,readingStartedAt:null,readingCompletedAt:null,isRead:false,isFavorite:false,
   });
 
-  const handleAdd = async (data: typeof EMPTY_FORM) => {
-    await window.api.books.add({
-      ...toBookPayload(data),
-      cover: data.cover || "https://images.unsplash.com/photo-1544947950-fa07a98d237f?w=300&h=420&fit=crop&auto=format",
-    });
+  const commitAdd = async (payload:Omit<Book,"id">) => {
+    await window.api.books.add(payload);
     await reloadBooks();
     setView("catalog");
     showToast("Livro cadastrado com sucesso no Bi-Bip!", "success");
+  };
+  const handleAdd = async (data: typeof EMPTY_FORM) => {
+    const payload={...toBookPayload(data),cover:data.cover||"https://images.unsplash.com/photo-1544947950-fa07a98d237f?w=300&h=420&fit=crop&auto=format"};
+    const matches=await window.api.books.findDuplicates(payload);
+    if(matches.length)setDuplicatePrompt({matches,data:payload});else await commitAdd(payload);
   };
 
   const handleEdit = async (data: typeof EMPTY_FORM) => {
@@ -1366,6 +1424,7 @@ export default function App() {
     await window.api.books.update(editingBook.id, {
       ...toBookPayload(data),
       cover: data.cover || editingBook.cover,
+      readingStatus:editingBook.readingStatus,currentPage:editingBook.currentPage,readingStartedAt:editingBook.readingStartedAt,readingCompletedAt:editingBook.readingCompletedAt,isRead:editingBook.isRead,isFavorite:editingBook.isFavorite,
     });
     await reloadBooks();
     setEditingBook(null);
@@ -1524,7 +1583,7 @@ export default function App() {
                           <p className="text-xs opacity-80 mb-0.5">{book.author}</p>
                           <h3 className="text-base sm:text-lg font-bold leading-tight" style={{ fontFamily: "'Playfair Display', serif" }}>{book.title}</h3>
                         </div>
-                        {readBooks.includes(book.id) && (
+                        {book.readingStatus === "completed" && (
                           <div className="absolute top-2 left-2 flex items-center gap-1 bg-black/50 text-white text-xs px-2 py-0.5 rounded-full">
                             <CheckCheck size={10} /> Lido
                           </div>
@@ -1585,6 +1644,7 @@ export default function App() {
                               <Star size={9} className="text-primary fill-primary" />
                               <span className="text-xs text-muted-foreground" style={{ fontFamily: "'DM Mono', monospace" }}>{book.rating}</span>
                             </div>
+                            {book.readingStatus === "reading" && <div className="mt-2"><div className="h-1.5 rounded-full bg-secondary overflow-hidden"><div className="h-full bg-primary" style={{width:`${book.pages>0?Math.min(100,book.currentPage/book.pages*100):0}%`}}/></div><p className="mt-1 text-[10px] text-muted-foreground">{book.currentPage}/{book.pages||"?"} páginas{book.pages > 0 ? ` · ${Math.round(book.currentPage / book.pages * 100)}%` : ""}</p></div>}
                             {bookTags.length > 0 && (
                               <div className="flex flex-wrap gap-1 mt-1.5">
                                 {bookTags.slice(0, 2).map((tag) => (
@@ -1627,7 +1687,7 @@ export default function App() {
                 description: editingBook.description,
                 featured: editingBook.featured,
                 tagIds: editingBook.tagIds,
-                format: editingBook.format || "Físico", location: editingBook.location || "", borrowedBy: editingBook.borrowedBy || "", notes: editingBook.notes || "",
+                format: editingBook.format || "Físico", location: editingBook.location || "", borrowedBy: editingBook.borrowedBy || "", notes: editingBook.notes || "", isbn:editingBook.isbn||"",edition:editingBook.edition||"",publisher:editingBook.publisher||"",
               }}
               onSubmit={handleEdit}
               onCancel={() => { setView("catalog"); setEditingBook(null); }}
@@ -1657,10 +1717,20 @@ export default function App() {
                   </div>
                 </div>
               </div>
-              <div className="bg-card border border-border rounded-2xl p-5 space-y-4">
+              <div className="mt-4 bg-card border border-border rounded-2xl p-5 space-y-4">
                 <h2 className="font-semibold">Local de armazenamento</h2>
                 <p className="text-sm text-muted-foreground break-all">{storagePath}</p>
                 <button onClick={async () => { const selected = await window.api.settings.chooseStoragePath(); if (selected) setStoragePath(selected); }} className="px-4 py-2.5 rounded-xl bg-primary text-primary-foreground text-sm font-semibold">Escolher pasta</button>
+              </div>
+              <DataManagement onChanged={async()=>{await Promise.all([reloadBooks(),reloadTags()]);}} onToast={showToast}/>
+              <div className="mt-4 bg-card border border-border rounded-2xl p-5">
+                <h2 className="font-semibold">Atalhos de teclado</h2>
+                <div className="mt-3 grid gap-2 text-sm text-muted-foreground sm:grid-cols-2">
+                  <p><kbd className="rounded-md border border-border bg-secondary px-1.5 py-0.5 text-xs text-foreground">Ctrl F</kbd> Pesquisar</p>
+                  <p><kbd className="rounded-md border border-border bg-secondary px-1.5 py-0.5 text-xs text-foreground">Ctrl N</kbd> Novo livro</p>
+                  <p><kbd className="rounded-md border border-border bg-secondary px-1.5 py-0.5 text-xs text-foreground">Ctrl ,</kbd> Configurações</p>
+                  <p><kbd className="rounded-md border border-border bg-secondary px-1.5 py-0.5 text-xs text-foreground">Esc</kbd> Fechar janela ou menu</p>
+                </div>
               </div>
             </section>
           )}
@@ -1758,14 +1828,14 @@ export default function App() {
                   {selectedBook.pages > 0 && <span>{selectedBook.pages} pág.</span>}
                 </div>
 
+                <div className="rounded-xl border border-border bg-secondary/30 p-3 space-y-3">
+                  <div className="flex items-center justify-between"><strong className="text-sm">Leitura</strong><span className="text-xs text-muted-foreground">{{want_to_read:"Quero ler",reading:"Lendo",completed:"Concluído"}[selectedBook.readingStatus]}</span></div>
+                  {selectedBook.readingStatus==="reading"&&<><div className="h-2 rounded-full bg-secondary overflow-hidden"><div className="h-full bg-primary" style={{width:`${selectedBook.pages?Math.min(100,selectedBook.currentPage/selectedBook.pages*100):0}%`}}/></div><div className="flex gap-2"><input type="number" min={0} max={selectedBook.pages||undefined} value={quickPage} onChange={e=>setQuickPage(e.target.value)} onKeyDown={e=>{if(e.key==="Enter"){e.preventDefault();updateReading(selectedBook.id,"reading",Number(quickPage));}}} className="min-w-0 flex-1 rounded-lg border border-border bg-background px-3 py-2 text-sm" title="Pressione Enter para atualizar"/><button onClick={()=>updateReading(selectedBook.id,"reading",Number(quickPage))} className="rounded-lg bg-primary px-3 py-2 text-xs font-semibold text-primary-foreground">Atualizar página</button></div></>}
+                  <div className="flex flex-wrap gap-2">{selectedBook.readingStatus==="want_to_read"&&<button onClick={()=>updateReading(selectedBook.id,"reading",0)} className="rounded-lg bg-primary px-3 py-2 text-xs font-semibold text-primary-foreground">Iniciar leitura</button>}{selectedBook.readingStatus==="reading"&&<button onClick={()=>updateReading(selectedBook.id,"completed",selectedBook.pages||selectedBook.currentPage)} className="rounded-lg bg-primary px-3 py-2 text-xs font-semibold text-primary-foreground">Concluir leitura</button>}{selectedBook.readingStatus==="completed"&&<button onClick={async()=>{const updated=await window.api.books.startReread(selectedBook.id);setSelectedBook(updated);await reloadBooks();setReadingSessions(await window.api.books.getReadingSessions(selectedBook.id));}} className="rounded-lg bg-primary px-3 py-2 text-xs font-semibold text-primary-foreground">Iniciar nova leitura</button>}</div>
+                  {readingSessions.length>0&&<details><summary className="cursor-pointer text-xs font-semibold">Histórico ({readingSessions.length})</summary><div className="mt-2 space-y-2">{readingSessions.map(session=><div key={session.id} className="text-xs text-muted-foreground border-l-2 border-primary pl-2">{session.status==="completed"?"Concluída":"Em andamento"} · página {session.currentPage}{session.startedAt&&` · início ${new Date(session.startedAt).toLocaleDateString('pt-BR')}`}{session.completedAt&&` · conclusão ${new Date(session.completedAt).toLocaleDateString('pt-BR')}`}</div>)}</div></details>}
+                </div>
+
                 <div className="flex flex-col gap-2 mt-auto pt-1">
-                  <button
-                    onClick={() => toggleRead(selectedBook.id)}
-                    className={`flex items-center justify-center gap-2 py-2.5 rounded-xl text-sm font-semibold transition-all ${readBooks.includes(selectedBook.id) ? "bg-primary text-primary-foreground" : "bg-secondary hover:bg-accent text-foreground"}`}
-                  >
-                    <CheckCheck size={14} />
-                    {readBooks.includes(selectedBook.id) ? "Marcado como lido" : "Marcar como lido"}
-                  </button>
                   <div className="flex gap-2">
                     <button onClick={() => toggleFav(selectedBook.id)} className="flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl bg-secondary hover:bg-accent transition-colors text-sm font-semibold">
                       <Heart size={14} className={favorites.includes(selectedBook.id) ? "text-primary fill-primary" : "text-muted-foreground"} />
@@ -1799,6 +1869,7 @@ export default function App() {
           onCancel={() => setConfirmDelete(null)}
         />
       )}
+      {duplicatePrompt&&<div className="fixed inset-0 z-[70] flex items-center justify-center p-4"><div className="absolute inset-0 bg-foreground/45"/><div className="relative w-full max-w-lg rounded-2xl border border-border bg-card p-5 shadow-2xl"><h2 className="text-lg font-bold">Possível livro duplicado</h2><p className="mt-1 text-sm text-muted-foreground">Encontramos {duplicatePrompt.matches[0].book.title} ({duplicatePrompt.matches[0].confidence==="strong"?"correspondência forte":"correspondência provável"}) por {duplicatePrompt.matches[0].reasons.join(", ")}.</p><div className="mt-5 flex flex-wrap justify-end gap-2"><button onClick={()=>setDuplicatePrompt(null)} className="rounded-lg bg-secondary px-3 py-2 text-sm">Cancelar</button><button onClick={()=>{setSelectedBook(duplicatePrompt.matches[0].book);setDuplicatePrompt(null);setView("catalog");}} className="rounded-lg bg-secondary px-3 py-2 text-sm">Visualizar existente</button><button onClick={async()=>{const pending=duplicatePrompt.data;setDuplicatePrompt(null);await commitAdd(pending);}} className="rounded-lg bg-primary px-3 py-2 text-sm font-semibold text-primary-foreground">Cadastrar mesmo assim</button></div></div></div>}
 
       {/* Inject animation keyframes */}
       <style>{`

@@ -32,7 +32,15 @@ function createIco(images) {
 
 app.whenReady().then(async () => {
   fs.mkdirSync(output, { recursive: true });
-  const renderer = new BrowserWindow({ width: 512, height: 512, show: false, frame: false, useContentSize: true });
+  const renderer = new BrowserWindow({
+    width: 512,
+    height: 512,
+    show: false,
+    frame: false,
+    transparent: true,
+    backgroundColor: "#00000000",
+    useContentSize: true,
+  });
   await renderer.loadURL(pathToFileURL(source).toString());
   const master = await renderer.webContents.capturePage({ x: 0, y: 0, width: 512, height: 512 });
   renderer.destroy();

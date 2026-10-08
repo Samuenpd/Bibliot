@@ -91,6 +91,13 @@ out
 .nuxt
 dist
 
+# Bancos e arquivos auxiliares criados em execução
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+
 # Gatsby files
 .cache/
 # Comment in the public line in if your project uses Gatsby and not Next.js
