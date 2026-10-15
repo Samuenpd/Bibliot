@@ -27,3 +27,43 @@ test("importa CSV e JSON exportado preservando relacionamentos",()=>{const root=
 test("backup e restauração incluem capas e recuperam falha sem perder dados",async()=>{const root=temp();let lib=createLibrary(root);lib.booksApi.add(book({title:"Original"}));fs.writeFileSync(path.join(root,"covers","capa.jpg"),"imagem");const replace=async operation=>{const storage=lib.storageRoot;lib.close();try{await operation(storage);lib=createLibrary(storage);}catch(error){lib=createLibrary(storage);throw error;}};const service=createDataService(()=>lib,replace),zip=path.join(temp(),"backup.zip");await service.createBackup(zip);lib.booksApi.add(book({title:"Depois"}));assert.equal(service.validateBackup(zip).format,"bibip-backup");await service.restoreBackup(zip);assert.deepEqual(lib.booksApi.getAll().map(b=>b.title),["Original"]);assert.equal(fs.readFileSync(path.join(root,"covers","capa.jpg"),"utf8"),"imagem");const badRoot=temp(),badDb=path.join(badRoot,"biblioteca.db"),bad=new DatabaseSync(badDb);bad.exec("CREATE VIEW schema_migrations AS SELECT 1 version, 'x' applied_at");bad.close();const invalidZip=path.join(badRoot,"valid-sqlite-invalid-schema.zip"),archive=new AdmZip();archive.addLocalFile(badDb);archive.addFile("manifest.json",Buffer.from(JSON.stringify({format:"bibip-backup",formatVersion:1,schemaVersion:3,createdAt:new Date().toISOString()})));archive.writeZip(invalidZip);await assert.rejects(()=>service.restoreBackup(invalidZip));assert.deepEqual(lib.booksApi.getAll().map(b=>b.title),["Original"]);assert.equal(fs.readFileSync(path.join(root,"covers","capa.jpg"),"utf8"),"imagem");lib.close();});
 
 test("protege biblioteca existente na lógica de transferência",()=>{const a=createLibrary(temp()),b=createLibrary(temp());a.booksApi.add(book({title:"Origem"}));b.booksApi.add(book({title:"Destino"}));assert.equal(a.booksApi.getAll()[0].title,"Origem");assert.equal(b.booksApi.getAll()[0].title,"Destino");a.close();b.close();});
+
+test("JSON preserva favorito, responsável pelo empréstimo e datas de leitura",()=>{
+  const source=createLibrary(temp()),target=createLibrary(temp());
+  try {
+    const reading=source.booksApi.add(book({title:"Em leitura",isFavorite:true}));
+    source.booksApi.addLoan(reading,"Ana","2026-01-01",null);
+    source.booksApi.updateReading(reading,{status:"reading",currentPage:12,startedAt:"2026-01-02T00:00:00.000Z"});
+    const completed=source.booksApi.add(book({title:"Concluído"}));
+    source.booksApi.updateReading(completed,{status:"completed",startedAt:"2026-01-03T00:00:00.000Z",completedAt:"2026-01-05T00:00:00.000Z"});
+    const file=path.join(temp(),"roundtrip.json");
+    createDataService(()=>source,async()=>{}).exportJson(file);
+    const service=createDataService(()=>target,async()=>{}),preview=service.previewImport(file);
+    service.importRows(preview.rows,preview.rows.map(row=>row.index));
+    for(const original of source.booksApi.getAll()){
+      const restored=target.booksApi.getAll().find(item=>item.title===original.title);
+      for(const field of ["isFavorite","borrowedBy","readingStatus","currentPage","readingStartedAt","readingCompletedAt"])
+        assert.equal(restored[field],original[field],`${original.title}: ${field}`);
+      assert.deepEqual(target.booksApi.getLoans(restored.id).map(({id,bookId,...loan})=>loan),source.booksApi.getLoans(original.id).map(({id,bookId,...loan})=>loan));
+    }
+    const restored=target.booksApi.getAll().find(item=>item.title==="Em leitura");
+    target.booksApi.update(restored.id,{...restored,title:"Título editado"});
+    assert.equal(target.booksApi.get(restored.id).isFavorite,true);
+  } finally {source.close();target.close();}
+});
+
+test("mapeamento permite ignorar colunas reconhecidas e mantém reconhecimento automático",()=>{
+  const lib=createLibrary(temp());
+  try {
+    const service=createDataService(()=>lib,async()=>{}),file=path.join(temp(),"mapping.csv");
+    fs.writeFileSync(file,"Título;Autor;Páginas;Descrição\nLivro;Autora;100;Texto");
+    assert.equal(service.previewImport(file).rows[0].book.pages,100);
+    const ignored=service.previewImport(file,{"Páginas":"",descricao:""}).rows[0];
+    assert.equal(ignored.valid,true);
+    assert.equal(ignored.book.pages,0);
+    assert.equal(ignored.book.description,"");
+    assert.equal(ignored.book.title,"Livro");
+    assert.equal(service.previewImport(file,{"Título":""}).rows[0].valid,false);
+    assert.equal(service.previewImport(file,{"Páginas":"year"}).rows[0].book.year,100);
+  } finally {lib.close();}
+});

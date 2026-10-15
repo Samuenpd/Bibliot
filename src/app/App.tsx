@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect, useCallback } from "react"; //sammy
+import { useState, useMemo, useEffect, useCallback, useRef } from "react"; //sammy
 import {
   Search, BookOpen, Star, Heart, ChevronRight, Filter, X, StickyNote, Save, Handshake, CalendarDays,
   Plus, Upload, Pencil, CheckCheck, Menu, SlidersHorizontal,
@@ -476,6 +476,7 @@ function BookForm({ initial, onSubmit, onCancel, isEdit, tags, onToast }: {
   const [saved, setSaved] = useState(false);
   const [isbn, setIsbn] = useState(initial.isbn || "");
   const [isSearching, setIsSearching] = useState(false);
+  const isbnSearchInProgress = useRef(false);
   const [isGenreOpen, setIsGenreOpen] = useState(false);
   const [isDragOver, setIsDragOver] = useState(false);
 
@@ -611,6 +612,7 @@ function BookForm({ initial, onSubmit, onCancel, isEdit, tags, onToast }: {
 
   // Fallback granular em cascata (campo a campo)
   const handleSearchISBN = async () => {
+    if (isbnSearchInProgress.current) return;
     const normalizedIsbn = isbn.trim().replace(/-/g, "");
 
     if (!normalizedIsbn) {
@@ -619,6 +621,7 @@ function BookForm({ initial, onSubmit, onCancel, isEdit, tags, onToast }: {
       return;
     }
 
+    isbnSearchInProgress.current = true;
     try {
       setIsSearching(true);
 
@@ -657,6 +660,8 @@ function BookForm({ initial, onSubmit, onCancel, isEdit, tags, onToast }: {
           const volume = await findVolumeWithCover(`isbn:${normalizedIsbn}`);
           if (volume) {
             if (!acc.title && volume.title) acc.title = volume.title;
+            if (!acc.pages && volume.pageCount) acc.pages = String(volume.pageCount);
+            if (!acc.description && volume.description) acc.description = volume.description;
             if (!acc.author && Array.isArray(volume.authors)) acc.author = parseAuthors(volume.authors);
             if (!acc.year) {
               const y = parseYear(volume.publishedDate || "");
@@ -676,6 +681,8 @@ function BookForm({ initial, onSubmit, onCancel, isEdit, tags, onToast }: {
           const q = [acc.title, acc.author].filter(Boolean).join(" ");
           const volumeTitle = await findVolumeWithCover(q || acc.title);
           if (volumeTitle) {
+            if (!acc.pages && volumeTitle.pageCount) acc.pages = String(volumeTitle.pageCount);
+            if (!acc.description && volumeTitle.description) acc.description = volumeTitle.description;
             if (!acc.author && Array.isArray(volumeTitle.authors)) acc.author = parseAuthors(volumeTitle.authors);
             if (!acc.year) {
               const y = parseYear(volumeTitle.publishedDate || "");
@@ -771,6 +778,7 @@ function BookForm({ initial, onSubmit, onCancel, isEdit, tags, onToast }: {
       setIsbn(normalizedIsbn);
       onToast("ISBN não encontrado nas bases de dados. Insira as informações manualmente.", "error");
     } finally {
+      isbnSearchInProgress.current = false;
       setIsSearching(false);
     }
   };
@@ -813,6 +821,7 @@ function BookForm({ initial, onSubmit, onCancel, isEdit, tags, onToast }: {
                     type="text"
                     placeholder="Ex: 9788575226930"
                     value={isbn}
+                    disabled={isSearching}
                     onChange={(e) => setIsbn(e.target.value)}
                     onKeyDown={(e) => {
                       if (e.key === "Enter") {
