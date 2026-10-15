@@ -89,9 +89,13 @@ function validateBook(data) {
 
 function createLibrary(storageRoot) {
   fs.mkdirSync(storageRoot, { recursive: true }); fs.mkdirSync(path.join(storageRoot, "covers"), { recursive: true });
-  const dbPath = path.join(storageRoot, "biblioteca.db"), db = new DatabaseSync(dbPath);
+  const { acquireLibraryLock } = require("./library-lock.cjs");
+  const releaseLock = acquireLibraryLock(storageRoot);
+  const dbPath = path.join(storageRoot, "biblioteca.db");
+  let db;
+  try { db = new DatabaseSync(dbPath); } catch (error) { releaseLock(); throw error; }
   try { db.exec("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL; PRAGMA busy_timeout = 5000;"); migrate(db); }
-  catch(error){ try{db.close();}catch{} throw error; }
+  catch(error){ try{db.close();}catch{} releaseLock(); throw error; }
   const tagMap = () => { const map = new Map(); for (const row of db.prepare("SELECT book_id, tag_id FROM book_tags").all()) { if (!map.has(row.book_id)) map.set(row.book_id, []); map.get(row.book_id).push(Number(row.tag_id)); } return map; };
   const rowToBook = (row, tags = tagMap()) => ({ id:Number(row.id), title:row.title, author:row.author, genre:row.genre||"", year:Number(row.year||0), rating:Number(row.rating||0), pages:Number(row.pages||0), cover:row.cover||"", description:row.description||"", featured:!!row.featured, isRead:row.reading_status==="completed", isFavorite:!!row.is_favorite, tagIds:tags.get(row.id)||[], format:row.format||"Físico", location:row.location||"", borrowedBy:row.borrowed_by||"", notes:row.notes||"", isbn:row.isbn||"", edition:row.edition||"", publisher:row.publisher||"", readingStatus:row.reading_status||"want_to_read", currentPage:Number(row.current_page||0), readingStartedAt:row.reading_started_at||null, readingCompletedAt:row.reading_completed_at||null });
   const getAll = () => { const tags=tagMap(), notes=new Map(); for(const row of db.prepare("SELECT book_id,content FROM book_notes ORDER BY created_at DESC,id DESC").all()){if(!notes.has(row.book_id))notes.set(row.book_id,[]);notes.get(row.book_id).push(row.content);} return db.prepare("SELECT * FROM books ORDER BY id DESC").all().map(row=>({...rowToBook(row,tags),noteContents:notes.get(row.id)||[]})); };
@@ -109,6 +113,7 @@ function createLibrary(storageRoot) {
     getLoans:bookId=>db.prepare("SELECT id,book_id bookId,borrower,lent_at lentAt,due_at dueAt,returned_at returnedAt FROM book_loans WHERE book_id=? ORDER BY lent_at DESC,id DESC").all(Number(bookId)),addLoan(bookId,borrower,lentAt,dueAt){const id=Number(bookId);if(db.prepare("SELECT 1 FROM book_loans WHERE book_id=? AND returned_at IS NULL").get(id))throw new Error("Este livro já possui um empréstimo em aberto.");const info=db.prepare("INSERT INTO book_loans(book_id,borrower,lent_at,due_at) VALUES (?,?,?,?)").run(id,String(borrower).trim(),lentAt,dueAt||null);db.prepare("UPDATE books SET borrowed_by=? WHERE id=?").run(String(borrower).trim(),id);return db.prepare("SELECT id,book_id bookId,borrower,lent_at lentAt,due_at dueAt,returned_at returnedAt FROM book_loans WHERE id=?").get(info.lastInsertRowid);},returnLoan(id){const loan=db.prepare("SELECT id,book_id bookId,borrower,lent_at lentAt,due_at dueAt,returned_at returnedAt FROM book_loans WHERE id=?").get(Number(id));if(!loan)throw new Error("Empréstimo não encontrado.");if(!loan.returnedAt){db.prepare("UPDATE book_loans SET returned_at=? WHERE id=?").run(new Date().toISOString(),Number(id));db.prepare("UPDATE books SET borrowed_by='' WHERE id=?").run(loan.bookId);}return db.prepare("SELECT id,book_id bookId,borrower,lent_at lentAt,due_at dueAt,returned_at returnedAt FROM book_loans WHERE id=?").get(Number(id));}
   };
   const tagsApi={getAll:()=>db.prepare("SELECT * FROM tags ORDER BY id").all(),add:data=>Number(db.prepare("INSERT INTO tags(name,color) VALUES (?,?)").run(String(data.name).trim(),String(data.color)).lastInsertRowid),update:(id,data)=>db.prepare("UPDATE tags SET name=?,color=? WHERE id=?").run(String(data.name).trim(),String(data.color),Number(id)),delete:id=>db.prepare("DELETE FROM tags WHERE id=?").run(Number(id))};
-  return {db,dbPath,storageRoot,booksApi,tagsApi,genresApi:createGenresApi(db),close:()=>db.close(),integrityCheck:()=>db.prepare("PRAGMA integrity_check").all().every(row=>Object.values(row)[0]==="ok")};
+  let closed = false;
+  return {db,dbPath,storageRoot,booksApi,tagsApi,genresApi:createGenresApi(db),close:()=>{if(closed)return;closed=true;try{db.close();}finally{releaseLock();}},integrityCheck:()=>db.prepare("PRAGMA integrity_check").all().every(row=>Object.values(row)[0]==="ok")};
 }
 module.exports={createLibrary,migrate,normalizeText,normalizeIsbn,duplicateMatches,SCHEMA_VERSION,inTransaction};

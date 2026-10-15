@@ -5,7 +5,7 @@ const crypto = require("crypto");
 const { pathToFileURL } = require("url");
 const { app, BrowserWindow, ipcMain, dialog, protocol, net, shell } = require("electron");
 
-let library, booksApi, tagsApi, dataService;
+let library, booksApi, tagsApi, dataService, storageWarning = null;
 let coversDir;
 
 // Define o nome do app para que o diretório no AppData seja "Bi-Bip"
@@ -155,7 +155,7 @@ function registerCoverProtocol() {
 app.whenReady().then(async () => {
   const { createLibrary } = require("./db.cjs");
   const { createDataService } = require("./data-service.cjs");
-  const { storageDirectory, saveStoragePath, copyLibrary, initializeStorage } = require("./storage-service.cjs");
+  const { storageDirectory, saveStoragePath, copyLibrary, initializeStorageState } = require("./storage-service.cjs");
   const storageConfigPath = path.join(app.getPath("userData"), "storage.json");
   const openLibrary = (root) => { library = createLibrary(root); booksApi = library.booksApi; tagsApi = library.tagsApi; coversDir = path.join(root, "covers"); };
   const announceChange = () => BrowserWindow.getAllWindows().forEach(win => win.webContents.send("library:changed"));
@@ -164,7 +164,9 @@ app.whenReady().then(async () => {
     try { await operation(root); openLibrary(root); announceChange(); }
     catch (error) { try { openLibrary(root); } catch {} throw error; }
   };
-  openLibrary(await initializeStorage(storageConfigPath, app.getPath("userData")));
+  const startupStorage = await initializeStorageState(storageConfigPath, app.getPath("userData"));
+  storageWarning = startupStorage.unavailablePath ? `A biblioteca configurada em ${startupStorage.unavailablePath} não está disponível. Conecte o HD e escolha a pasta dele para abrir a biblioteca existente.` : null;
+  openLibrary(startupStorage.root);
   dataService=createDataService(()=>library,replaceLibrary);
 
   ensureCoversDir();
@@ -211,6 +213,7 @@ app.whenReady().then(async () => {
   ipcMain.handle("tags:update", wrap((_e, id, data) => tagsApi.update(id, data)));
   ipcMain.handle("tags:delete", wrap((_e, id) => tagsApi.delete(id)));
   ipcMain.handle("settings:getStoragePath", wrap(() => library.storageRoot));
+  ipcMain.handle("settings:getStorageWarning", wrap(() => storageWarning));
   ipcMain.handle("settings:openStoragePath", wrap(async () => {
     const error = await shell.openPath(library.storageRoot);
     if (error) throw new Error(`Não foi possível abrir a pasta: ${error}`);
@@ -235,11 +238,13 @@ app.whenReady().then(async () => {
     if(mode==="copy") await copyLibrary(current,destination);
     const candidate=createLibrary(destination);if(!candidate.integrityCheck()){candidate.close();throw new Error("A biblioteca no novo local não passou na validação.");}candidate.close();
     library.close();
-    try { openLibrary(destination); saveStoragePath(storageConfigPath,destination); }
+    try { openLibrary(destination); saveStoragePath(storageConfigPath,destination); storageWarning=null; }
     catch(error){ if(library.storageRoot===destination) library.close(); openLibrary(current); throw error; }
     announceChange();
     return destination;
   }));
+
+  app.on("before-quit", () => { try { library?.close(); } catch {} });
 
   ipcMain.handle("data:createBackup",wrap(async()=>{const result=await dialog.showSaveDialog({title:"Salvar backup completo",defaultPath:`Bi-Bip-backup-${new Date().toISOString().slice(0,10)}.zip`,filters:[{name:"Backup Bi-Bip",extensions:["zip"]}]});return result.canceled?null:dataService.createBackup(result.filePath);}));
   ipcMain.handle("data:selectBackup",wrap(async()=>{const result=await dialog.showOpenDialog({title:"Selecionar backup",properties:["openFile"],filters:[{name:"Backup Bi-Bip",extensions:["zip"]}]});if(result.canceled)return null;return {file:result.filePaths[0],manifest:dataService.validateBackup(result.filePaths[0])};}));

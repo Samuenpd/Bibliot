@@ -46,6 +46,7 @@ app.whenReady().then(async () => {
     ipcMain.handle("genres:add", (_event, name) => library.genresApi.add(name));
     ipcMain.handle("tags:getAll", () => library.tagsApi.getAll());
     ipcMain.handle("settings:getStoragePath", () => library.storageRoot);
+    ipcMain.handle("settings:getStorageWarning", () => null);
     ipcMain.handle("settings:openStoragePath", () => { opened++; });
     ipcMain.handle("data:clearLibrary", (_event, confirmation) => {
       cleared++;
@@ -59,6 +60,10 @@ app.whenReady().then(async () => {
     await click("Cadastrar");
     await until(`!!document.querySelector('[aria-label="Selecionar gênero"]')`);
     await evaluate(`document.querySelector('[aria-label="Selecionar gênero"]').click()`);
+    assert.equal(await evaluate(`Array.from(document.querySelectorAll('button')).find(b=>b.textContent.trim()==='Novo gênero').className.includes('hover:bg-accent')`), true);
+    await evaluate(`document.body.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true}))`);
+    await until(`!Array.from(document.querySelectorAll('button')).some(b=>b.textContent.trim()==='Novo gênero')`);
+    await evaluate(`document.querySelector('[aria-label="Selecionar gênero"]').click()`);
     await click("Novo gênero");
     await until(`!!document.getElementById('new-genre')`);
     assert.equal(await evaluate(`Array.from(document.querySelectorAll('button')).find(b=>b.textContent.trim()==='Adicionar gênero').disabled`), true);
@@ -67,6 +72,11 @@ app.whenReady().then(async () => {
     await until(`document.querySelector('[aria-label="Selecionar gênero"]').textContent.includes('Space Opera')`);
     assert.equal(library.booksApi.getAll().length, 1, "Enter no gênero não pode cadastrar o livro");
     assert.ok(library.genresApi.getAll().includes("Space Opera"));
+    await evaluate(`document.querySelector('[aria-label="Selecionar formato"]').click()`);
+    await until(`Array.from(document.querySelectorAll('button')).some(b=>b.textContent.trim()==='E-book')`);
+    assert.equal(await evaluate(`Array.from(document.querySelectorAll('button')).find(b=>b.textContent.trim()==='E-book').className.includes('hover:bg-accent')`), true);
+    await click("E-book");
+    await until(`document.querySelector('[aria-label="Selecionar formato"]').textContent.includes('E-book')`);
     await typeSelector('input[placeholder="Nome do livro"]', "Livro espacial");
     await typeSelector('input[placeholder="Nome do autor"]', "Autora");
     await click("Adicionar ao acervo");

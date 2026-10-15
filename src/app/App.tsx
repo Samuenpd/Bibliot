@@ -65,7 +65,7 @@ declare global {
         delete: (id: number) => Promise<void>;
       };
       genres: { getAll: () => Promise<string[]>; add: (name: string) => Promise<string> };
-      settings: { getStoragePath: () => Promise<string>; chooseStoragePath: () => Promise<string | null>; openStoragePath: () => Promise<void> };
+      settings: { getStoragePath: () => Promise<string>; getStorageWarning: () => Promise<string | null>; chooseStoragePath: () => Promise<string | null>; openStoragePath: () => Promise<void> };
       data: { clearLibrary:(confirmation:string)=>Promise<boolean>; createBackup:()=>Promise<string|null>; selectBackup:()=>Promise<{file:string;manifest:any}|null>; restoreBackup:(file:string)=>Promise<boolean>; exportCatalog:(format:"csv"|"json")=>Promise<string|null>; selectImport:()=>Promise<any>; previewImport:(file:string,mapping:Record<string,string>)=>Promise<any>; confirmImport:(preview:any,selected:number[])=>Promise<{imported:number;skipped:number}> };
       onLibraryChanged: (callback:()=>void) => ()=>void;
       downloadImage: (url: string) => Promise<string>;
@@ -482,10 +482,13 @@ function BookForm({ initial, onSubmit, onCancel, isEdit, tags, genres, onAddGenr
   const [isSearching, setIsSearching] = useState(false);
   const isbnSearchInProgress = useRef(false);
   const [isGenreOpen, setIsGenreOpen] = useState(false);
+  const [isFormatOpen, setIsFormatOpen] = useState(false);
   const [isAddingGenre, setIsAddingGenre] = useState(false);
   const [newGenre, setNewGenre] = useState("");
   const [savingGenre, setSavingGenre] = useState(false);
   const genreSaveInProgress = useRef(false);
+  const genreDropdownRef = useRef<HTMLDivElement>(null);
+  const formatDropdownRef = useRef<HTMLDivElement>(null);
   const [isDragOver, setIsDragOver] = useState(false);
 
   const addGenre = async () => {
@@ -510,6 +513,22 @@ function BookForm({ initial, onSubmit, onCancel, isEdit, tags, genres, onAddGenr
 
   const toggleTag = (id: number) =>
     setForm((f) => ({ ...f, tagIds: f.tagIds.includes(id) ? f.tagIds.filter((x) => x !== id) : [...f.tagIds, id] }));
+
+  useEffect(() => {
+    if (!isGenreOpen && !isFormatOpen) return;
+    const closeMenus = (event: PointerEvent) => {
+      if (genreDropdownRef.current && !genreDropdownRef.current.contains(event.target as Node)) {
+        setIsGenreOpen(false); setIsAddingGenre(false); setNewGenre("");
+      }
+      if (formatDropdownRef.current && !formatDropdownRef.current.contains(event.target as Node)) setIsFormatOpen(false);
+    };
+    const closeWithEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") { setIsGenreOpen(false); setIsAddingGenre(false); setNewGenre(""); setIsFormatOpen(false); }
+    };
+    document.addEventListener("pointerdown", closeMenus);
+    document.addEventListener("keydown", closeWithEscape);
+    return () => { document.removeEventListener("pointerdown", closeMenus); document.removeEventListener("keydown", closeWithEscape); };
+  }, [isGenreOpen, isFormatOpen]);
 
   // ── Handlers de imagem (upload local, drag & drop, colar) ──────────────
   const handleSelectImage = async () => {
@@ -884,13 +903,12 @@ function BookForm({ initial, onSubmit, onCancel, isEdit, tags, genres, onAddGenr
 
         <div className="grid grid-cols-2 gap-3 sm:gap-4">
           <Field label="Gênero *">
-            <div className="relative genre-dropdown-container">
+            <div ref={genreDropdownRef} className="relative genre-dropdown-container">
               <button
                 type="button"
-                onClick={() => setIsGenreOpen((prev) => !prev)}
+                onClick={() => { setIsGenreOpen((prev) => !prev); setIsFormatOpen(false); }}
                 aria-label="Selecionar gênero"
                 aria-expanded={isGenreOpen}
-                onMouseDown={(e) => e.preventDefault()}
                 className={`${inputCls} flex justify-between items-center cursor-pointer appearance-none outline-none focus:outline-none focus:ring-0 focus:border-transparent active:outline-none active:ring-0 active:border-transparent`}
               >
                 <span className="truncate">{form.genre || "Selecione..."}</span>
@@ -922,7 +940,7 @@ function BookForm({ initial, onSubmit, onCancel, isEdit, tags, genres, onAddGenr
                         <button type="button" disabled={savingGenre||!newGenre.trim()} onClick={()=>void addGenre()} className="px-3 py-2 rounded-lg bg-primary text-primary-foreground text-xs font-semibold disabled:opacity-40">{savingGenre?"Adicionando...":"Adicionar gênero"}</button>
                         <button type="button" disabled={savingGenre} onClick={()=>{setIsAddingGenre(false);setNewGenre("");}} className="px-3 py-2 rounded-lg bg-secondary text-xs font-semibold">Cancelar</button>
                       </div>
-                    </div> : <button type="button" onClick={()=>{setNewGenre("");setIsAddingGenre(true);}} className="flex items-center gap-2 w-full text-left text-sm font-semibold text-primary"><Plus size={14}/>Novo gênero</button>}
+                    </div> : <button type="button" onClick={()=>{setNewGenre("");setIsAddingGenre(true);}} className="flex items-center gap-2 w-full rounded-lg px-4 py-2 text-left text-sm font-semibold text-primary hover:bg-accent hover:text-accent-foreground"><Plus size={14}/>Novo gênero</button>}
                   </div>
                 </div>
               )}
@@ -940,9 +958,14 @@ function BookForm({ initial, onSubmit, onCancel, isEdit, tags, genres, onAddGenr
 
         <div className="grid grid-cols-2 gap-3 sm:gap-4">
           <Field label="Formato">
-            <select value={form.format} onChange={set("format")} className={inputCls}>
-              <option>Físico</option><option>Ebook</option>
-            </select>
+            <div ref={formatDropdownRef} className="relative">
+              <button type="button" onClick={() => { setIsFormatOpen((prev) => !prev); setIsGenreOpen(false); setIsAddingGenre(false); }} aria-label="Selecionar formato" aria-expanded={isFormatOpen} className={`${inputCls} flex items-center justify-between cursor-pointer`}>
+                <span>{form.format === "Ebook" ? "E-book" : "Físico"}</span><ChevronDown size={16} className="text-muted-foreground" />
+              </button>
+              {isFormatOpen && <div className="absolute z-50 mt-1 w-full overflow-hidden rounded-xl border border-border bg-popover shadow-lg">
+                {[{ value: "Físico", label: "Físico" }, { value: "Ebook", label: "E-book" }].map((option) => <button key={option.value} type="button" onClick={() => { setForm((current) => ({ ...current, format: option.value })); setIsFormatOpen(false); }} className={`w-full cursor-pointer px-4 py-2 text-left text-sm hover:bg-accent hover:text-accent-foreground ${form.format === option.value ? "bg-accent/60 text-accent-foreground font-semibold" : "text-foreground"}`}>{option.label}</button>)}
+              </div>}
+            </div>
           </Field>
           <Field label="Onde está (localização)">
             <input type="text" placeholder="Estante, quarto, Kindle..." value={form.location} onChange={set("location")} className={inputCls} />
@@ -1208,6 +1231,7 @@ export default function App() {
   const [genres, setGenres] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [storagePath, setStoragePath] = useState("");
+  const [storageWarning, setStorageWarning] = useState<string | null>(null);
   const [paletteId, setPaletteId] = useState(() => {
     const saved = localStorage.getItem("bibip-color-palette");
     return COLOR_PALETTES.some((palette) => palette.id === saved) ? saved! : "orange";
@@ -1362,12 +1386,13 @@ export default function App() {
 
   useEffect(() => {
     (async () => {
-      const savedPath = await window.api.settings.getStoragePath();
+      const [savedPath, warning] = await Promise.all([window.api.settings.getStoragePath(), window.api.settings.getStorageWarning()]);
       setStoragePath(savedPath);
+      setStorageWarning(warning);
       await Promise.all([reloadBooks(), reloadTags()]);
       setLoading(false);
     })();
-    return window.api.onLibraryChanged(()=>{window.api.settings.getStoragePath().then(setStoragePath);Promise.all([reloadBooks(),reloadTags()]);});
+    return window.api.onLibraryChanged(()=>{Promise.all([window.api.settings.getStoragePath(),window.api.settings.getStorageWarning()]).then(([savedPath,warning])=>{setStoragePath(savedPath);setStorageWarning(warning);});Promise.all([reloadBooks(),reloadTags()]);});
   }, []);
 
   useEffect(() => {
@@ -1791,9 +1816,10 @@ export default function App() {
               <div className="mt-4 bg-card border border-border rounded-2xl p-5 space-y-4">
                 <h2 className="font-semibold">Local de armazenamento</h2>
                 <p className="text-sm text-muted-foreground break-all">{storagePath}</p>
+                {storageWarning && <p role="alert" className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-foreground">{storageWarning}</p>}
                 <p className="text-sm text-muted-foreground">O acervo fica na subpasta Bi-Bip do local escolhido. “Abrir pasta” abre o local exibido acima, com o banco e as capas.</p>
                 <div className="flex flex-wrap gap-2">
-                  <button onClick={async () => { try { const selected = await window.api.settings.chooseStoragePath(); if (selected) setStoragePath(selected); } catch(error) { showToast(error instanceof Error?error.message:"Não foi possível escolher a pasta.","error"); } }} className="px-4 py-2.5 rounded-xl bg-primary text-primary-foreground text-sm font-semibold">Escolher pasta</button>
+                  <button onClick={async () => { try { const selected = await window.api.settings.chooseStoragePath(); if (selected) { setStoragePath(selected); setStorageWarning(null); } } catch(error) { showToast(error instanceof Error?error.message:"Não foi possível escolher a pasta.","error"); } }} className="px-4 py-2.5 rounded-xl bg-primary text-primary-foreground text-sm font-semibold">Escolher pasta</button>
                   <button onClick={async () => { try { await window.api.settings.openStoragePath(); } catch(error) { showToast(error instanceof Error?error.message:"Não foi possível abrir a pasta.","error"); } }} className="px-4 py-2.5 rounded-xl bg-secondary text-sm font-semibold">Abrir pasta</button>
                 </div>
               </div>

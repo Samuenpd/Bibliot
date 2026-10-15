@@ -11,11 +11,13 @@ function storageDirectory(selectedPath) {
   return path.basename(selected).toLowerCase() === "bi-bip" ? selected : path.join(selected, "Bi-Bip");
 }
 
-function saveStoragePath(configPath, root) {
+function saveStoragePath(configPath, root, unavailablePath = null) {
   fs.mkdirSync(path.dirname(configPath), { recursive: true });
   const temporary = `${configPath}.${process.pid}.tmp`;
   try {
-    fs.writeFileSync(temporary, JSON.stringify({ version: 2, path: path.resolve(root) }, null, 2));
+    const config = { version: 2, path: path.resolve(root) };
+    if (unavailablePath) config.unavailablePath = path.resolve(unavailablePath);
+    fs.writeFileSync(temporary, JSON.stringify(config, null, 2));
     fs.renameSync(temporary, configPath);
   } finally {
     fs.rmSync(temporary, { force: true });
@@ -60,9 +62,18 @@ async function copyLibrary(sourceRoot, destinationRoot) {
   }
 }
 
-async function initializeStorage(configPath, defaultRoot) {
-  let configured;
-  if (fs.existsSync(configPath)) configured = JSON.parse(fs.readFileSync(configPath, "utf8")).path;
+async function initializeStorageState(configPath, defaultRoot) {
+  let config = {};
+  if (fs.existsSync(configPath)) config = JSON.parse(fs.readFileSync(configPath, "utf8"));
+  const configured = config.path;
+  // Configurações antigas podiam guardar a pasta escolhida (pai de Bi-Bip).
+  // Só tratamos como mídia removida quando ela já aponta para a biblioteca.
+  if (configured && path.basename(path.resolve(configured)).toLowerCase() === "bi-bip" && !fs.existsSync(configured)) {
+    const fallback = storageDirectory(defaultRoot);
+    fs.mkdirSync(fallback, { recursive: true });
+    saveStoragePath(configPath, fallback, configured);
+    return { root: fallback, unavailablePath: configured };
+  }
   const source = configured || defaultRoot;
   const destination = storageDirectory(source);
   if (path.resolve(source) !== destination) {
@@ -70,7 +81,11 @@ async function initializeStorage(configPath, defaultRoot) {
     else fs.mkdirSync(destination, { recursive: true });
     saveStoragePath(configPath, destination);
   }
-  return destination;
+  return { root: destination, unavailablePath: config.unavailablePath || null };
 }
 
-module.exports = { storageDirectory, saveStoragePath, copyLibrary, initializeStorage };
+async function initializeStorage(configPath, defaultRoot) {
+  return (await initializeStorageState(configPath, defaultRoot)).root;
+}
+
+module.exports = { storageDirectory, saveStoragePath, copyLibrary, initializeStorage, initializeStorageState };

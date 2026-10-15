@@ -33,6 +33,7 @@ contextBridge.exposeInMainWorld("api", {
   settings: {
     openStoragePath: () => ipcRenderer.invoke("settings:openStoragePath"),
     getStoragePath: () => ipcRenderer.invoke("settings:getStoragePath"),
+    getStorageWarning: () => ipcRenderer.invoke("settings:getStorageWarning"),
     chooseStoragePath: () => ipcRenderer.invoke("settings:chooseStoragePath"),
   },
   data: {

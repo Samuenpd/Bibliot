@@ -4,7 +4,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { createLibrary } = require("../electron/db.cjs");
-const { storageDirectory, initializeStorage, copyLibrary, saveStoragePath } = require("../electron/storage-service.cjs");
+const { storageDirectory, initializeStorage, initializeStorageState, copyLibrary, saveStoragePath } = require("../electron/storage-service.cjs");
 
 const roots = [];
 const temp = () => { const root = fs.mkdtempSync(path.join(os.tmpdir(), "bibip-storage-test-")); roots.push(root); return root; };
@@ -87,4 +87,41 @@ test("cópia inválida não deixa banco parcial nem permite destino dentro das c
     assert.equal(fs.existsSync(path.join(target, "biblioteca.db")), false);
     assert.equal(fs.readdirSync(target).some(name => name.startsWith(".bibip-copy-")), false);
   } finally { source.close(); }
+});
+
+test("biblioteca externa existente é reaberta com livros, capas e dados sem cópia", async () => {
+  const root = temp(), externalParent = path.join(root, "HD-externo"), external = path.join(externalParent, "Bi-Bip");
+  let first = createLibrary(external);
+  try {
+    const id = first.booksApi.add({ title: "Livro no HD", author: "Pessoa", genre: "Teste" });
+    first.booksApi.addNote(id, "informação preservada");
+    fs.writeFileSync(path.join(external, "covers", "capa.jpg"), "capa externa");
+    first.close();
+    const secondProfile = path.join(root, "outro-computador", "storage.json");
+    saveStoragePath(secondProfile, externalParent);
+    const selected = await initializeStorage(secondProfile, path.join(root, "outro-computador", "Bi-Bip"));
+    assert.equal(selected, external);
+    first = createLibrary(selected);
+    assert.equal(first.booksApi.getAll()[0].title, "Livro no HD");
+    assert.equal(first.booksApi.getNotes(id)[0].content, "informação preservada");
+    assert.equal(fs.readFileSync(path.join(selected, "covers", "capa.jpg"), "utf8"), "capa externa");
+  } finally { first.close(); }
+});
+
+test("caminho externo indisponível usa local seguro e mantém aviso para reconexão", async () => {
+  const root = temp(), missing = path.join(root, "letra-antiga", "Bi-Bip"), config = path.join(root, "perfil", "storage.json"), fallback = path.join(root, "perfil", "Bi-Bip");
+  saveStoragePath(config, missing);
+  const result = await initializeStorageState(config, fallback);
+  assert.equal(result.root, fallback);
+  assert.equal(result.unavailablePath, missing);
+  const persisted = JSON.parse(fs.readFileSync(config, "utf8"));
+  assert.equal(persisted.path, fallback);
+  assert.equal(persisted.unavailablePath, missing);
+});
+
+test("bloqueia duas instâncias abertas na mesma biblioteca", () => {
+  const root = temp(), first = createLibrary(root);
+  try { assert.throws(() => createLibrary(root), /já está aberta/); }
+  finally { first.close(); }
+  const reopened = createLibrary(root);reopened.close();
 });
