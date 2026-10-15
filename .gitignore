@@ -90,6 +90,7 @@ out
 # Nuxt.js build / generate output
 .nuxt
 dist
+release/
 
 # Bancos e arquivos auxiliares criados em execução
 *.db
