@@ -1,8 +1,9 @@
 const fs = require("fs");
 const path = require("path");
 const { DatabaseSync } = require("node:sqlite");
+const { createGenresApi } = require("./genres.cjs");
 
-const SCHEMA_VERSION = 3;
+const SCHEMA_VERSION = 4;
 const READING_STATUSES = new Set(["want_to_read", "reading", "completed"]);
 
 function inTransaction(db, fn) {
@@ -34,8 +35,9 @@ function migrate(db) {
       CREATE TABLE IF NOT EXISTS reading_sessions (id INTEGER PRIMARY KEY AUTOINCREMENT, book_id INTEGER NOT NULL REFERENCES books(id) ON DELETE CASCADE, started_at TEXT, completed_at TEXT, current_page INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL CHECK(status IN ('want_to_read','reading','completed')));
       CREATE INDEX IF NOT EXISTS idx_books_isbn ON books(isbn);
       CREATE INDEX IF NOT EXISTS idx_books_reading_status ON books(reading_status);
+      CREATE TABLE IF NOT EXISTS genres (key TEXT PRIMARY KEY, name TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS idx_reading_sessions_book ON reading_sessions(book_id, id DESC);
-      INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (1, datetime('now')), (2, datetime('now')), (3, datetime('now'));
+      INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (1, datetime('now')), (2, datetime('now')), (3, datetime('now')), (4, datetime('now'));
       PRAGMA user_version = ${SCHEMA_VERSION};
     `);
     for (const group of db.prepare("SELECT lower(name) normalized, group_concat(id) ids FROM tags GROUP BY lower(name) HAVING count(*) > 1").all()) {
@@ -107,6 +109,6 @@ function createLibrary(storageRoot) {
     getLoans:bookId=>db.prepare("SELECT id,book_id bookId,borrower,lent_at lentAt,due_at dueAt,returned_at returnedAt FROM book_loans WHERE book_id=? ORDER BY lent_at DESC,id DESC").all(Number(bookId)),addLoan(bookId,borrower,lentAt,dueAt){const id=Number(bookId);if(db.prepare("SELECT 1 FROM book_loans WHERE book_id=? AND returned_at IS NULL").get(id))throw new Error("Este livro já possui um empréstimo em aberto.");const info=db.prepare("INSERT INTO book_loans(book_id,borrower,lent_at,due_at) VALUES (?,?,?,?)").run(id,String(borrower).trim(),lentAt,dueAt||null);db.prepare("UPDATE books SET borrowed_by=? WHERE id=?").run(String(borrower).trim(),id);return db.prepare("SELECT id,book_id bookId,borrower,lent_at lentAt,due_at dueAt,returned_at returnedAt FROM book_loans WHERE id=?").get(info.lastInsertRowid);},returnLoan(id){const loan=db.prepare("SELECT id,book_id bookId,borrower,lent_at lentAt,due_at dueAt,returned_at returnedAt FROM book_loans WHERE id=?").get(Number(id));if(!loan)throw new Error("Empréstimo não encontrado.");if(!loan.returnedAt){db.prepare("UPDATE book_loans SET returned_at=? WHERE id=?").run(new Date().toISOString(),Number(id));db.prepare("UPDATE books SET borrowed_by='' WHERE id=?").run(loan.bookId);}return db.prepare("SELECT id,book_id bookId,borrower,lent_at lentAt,due_at dueAt,returned_at returnedAt FROM book_loans WHERE id=?").get(Number(id));}
   };
   const tagsApi={getAll:()=>db.prepare("SELECT * FROM tags ORDER BY id").all(),add:data=>Number(db.prepare("INSERT INTO tags(name,color) VALUES (?,?)").run(String(data.name).trim(),String(data.color)).lastInsertRowid),update:(id,data)=>db.prepare("UPDATE tags SET name=?,color=? WHERE id=?").run(String(data.name).trim(),String(data.color),Number(id)),delete:id=>db.prepare("DELETE FROM tags WHERE id=?").run(Number(id))};
-  return {db,dbPath,storageRoot,booksApi,tagsApi,close:()=>db.close(),integrityCheck:()=>db.prepare("PRAGMA integrity_check").all().every(row=>Object.values(row)[0]==="ok")};
+  return {db,dbPath,storageRoot,booksApi,tagsApi,genresApi:createGenresApi(db),close:()=>db.close(),integrityCheck:()=>db.prepare("PRAGMA integrity_check").all().every(row=>Object.values(row)[0]==="ok")};
 }
 module.exports={createLibrary,migrate,normalizeText,normalizeIsbn,duplicateMatches,SCHEMA_VERSION,inTransaction};

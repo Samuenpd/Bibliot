@@ -26,6 +26,10 @@ contextBridge.exposeInMainWorld("api", {
     update: (id, data) => ipcRenderer.invoke("tags:update", id, data),
     delete: (id) => ipcRenderer.invoke("tags:delete", id),
   },
+  genres: {
+    getAll: () => ipcRenderer.invoke("genres:getAll"),
+    add: (name) => ipcRenderer.invoke("genres:add", name),
+  },
   settings: {
     openStoragePath: () => ipcRenderer.invoke("settings:openStoragePath"),
     getStoragePath: () => ipcRenderer.invoke("settings:getStoragePath"),

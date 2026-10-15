@@ -64,6 +64,7 @@ declare global {
         update: (id: number, data: Omit<TagDef, "id">) => Promise<void>;
         delete: (id: number) => Promise<void>;
       };
+      genres: { getAll: () => Promise<string[]>; add: (name: string) => Promise<string> };
       settings: { getStoragePath: () => Promise<string>; chooseStoragePath: () => Promise<string | null>; openStoragePath: () => Promise<void> };
       data: { clearLibrary:(confirmation:string)=>Promise<boolean>; createBackup:()=>Promise<string|null>; selectBackup:()=>Promise<{file:string;manifest:any}|null>; restoreBackup:(file:string)=>Promise<boolean>; exportCatalog:(format:"csv"|"json")=>Promise<string|null>; selectImport:()=>Promise<any>; previewImport:(file:string,mapping:Record<string,string>)=>Promise<any>; confirmImport:(preview:any,selected:number[])=>Promise<{imported:number;skipped:number}> };
       onLibraryChanged: (callback:()=>void) => ()=>void;
@@ -154,7 +155,7 @@ const bookMatchesSearch = (book: Book, rawQuery: string) => {
   );
 };
 
-const GENRES = ["Romance", "Realismo Mágico", "Mistério", "Suspense", "Ficção", "Fantasia", "Ficção Clássica", "Poesia", "Biografia", "História", "Ciência", "Drama", "Infantil", "Autoajuda", "Religião", "Quadrinhos", "Terror", "Aventura", "Outros"];
+const genreKey = (name: string) => name.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLocaleLowerCase("pt-BR").replace(/\s+/g, " ").trim();
 const MIN_SIDEBAR_WIDTH = 224;
 const MAX_SIDEBAR_WIDTH = 384;
 
@@ -366,7 +367,7 @@ function ConfirmDialog({ message, onConfirm, onCancel }: { message: string; onCo
 function SidebarContent({
   search, setSearch, readFilter, setReadFilter,
   selectedGenre, setSelectedGenre, selectedTagId, setSelectedTagId,
-  books, readBooks, favorites, tags, onClose,
+  books, readBooks, favorites, tags, genres, onClose,
 }: {
   search: string; setSearch: (v: string) => void;
   readFilter: ReadFilter; setReadFilter: (v: ReadFilter) => void;
@@ -374,6 +375,7 @@ function SidebarContent({
   selectedTagId: number | null; setSelectedTagId: (v: number | null) => void;
   books: Book[]; readBooks: number[]; favorites: number[];
   tags: TagDef[]; onClose?: () => void;
+  genres: string[];
 }) {
   return (
     <div className="bibip-sidebar-scroll flex flex-1 min-h-0 flex-col gap-5 overflow-y-auto overscroll-contain p-5">
@@ -432,7 +434,7 @@ function SidebarContent({
             <span>Todos os gêneros</span>
             {selectedGenre === "Todos" && <ChevronRight size={13} />}
           </button>
-          {GENRES.map((g) => (
+          {genres.map((g) => (
             <button key={g} onClick={() => { setSelectedGenre(selectedGenre === g ? "Todos" : g); onClose?.(); }}
               className={`text-left px-3 py-2 rounded-lg text-sm transition-all flex items-center justify-between ${selectedGenre === g ? "bg-primary text-primary-foreground font-semibold" : "text-foreground hover:bg-accent"}`}>
               <span>{g}</span>
@@ -464,12 +466,14 @@ function SidebarContent({
 
 // ── Book form ───────────────────────────────────────────────────────────────
 
-function BookForm({ initial, onSubmit, onCancel, isEdit, tags, onToast }: {
+function BookForm({ initial, onSubmit, onCancel, isEdit, tags, genres, onAddGenre, onToast }: {
   initial: typeof EMPTY_FORM;
   onSubmit: (data: typeof EMPTY_FORM) => void;
   onCancel: () => void;
   isEdit: boolean;
   tags: TagDef[];
+  genres: string[];
+  onAddGenre: (name: string) => Promise<string>;
   onToast: (msg: string, type: ToastData["type"]) => void;
 }) {
   const [form, setForm] = useState({ ...initial });
@@ -478,7 +482,25 @@ function BookForm({ initial, onSubmit, onCancel, isEdit, tags, onToast }: {
   const [isSearching, setIsSearching] = useState(false);
   const isbnSearchInProgress = useRef(false);
   const [isGenreOpen, setIsGenreOpen] = useState(false);
+  const [isAddingGenre, setIsAddingGenre] = useState(false);
+  const [newGenre, setNewGenre] = useState("");
+  const [savingGenre, setSavingGenre] = useState(false);
+  const genreSaveInProgress = useRef(false);
   const [isDragOver, setIsDragOver] = useState(false);
+
+  const addGenre = async () => {
+    if (!newGenre.trim() || genreSaveInProgress.current) return;
+    genreSaveInProgress.current = true;
+    setSavingGenre(true);
+    try {
+      const name = await onAddGenre(newGenre);
+      setForm(form => ({ ...form, genre: name }));
+      setNewGenre("");setIsAddingGenre(false);setIsGenreOpen(false);
+      onToast("Gênero selecionado e disponível no catálogo.", "success");
+    } catch (error) {
+      onToast(error instanceof Error ? error.message : "Não foi possível adicionar o gênero.", "error");
+    } finally { genreSaveInProgress.current = false;setSavingGenre(false); }
+  };
 
   const set = (field: keyof typeof EMPTY_FORM) =>
     (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) => {
@@ -866,6 +888,8 @@ function BookForm({ initial, onSubmit, onCancel, isEdit, tags, onToast }: {
               <button
                 type="button"
                 onClick={() => setIsGenreOpen((prev) => !prev)}
+                aria-label="Selecionar gênero"
+                aria-expanded={isGenreOpen}
                 onMouseDown={(e) => e.preventDefault()}
                 className={`${inputCls} flex justify-between items-center cursor-pointer appearance-none outline-none focus:outline-none focus:ring-0 focus:border-transparent active:outline-none active:ring-0 active:border-transparent`}
               >
@@ -874,7 +898,7 @@ function BookForm({ initial, onSubmit, onCancel, isEdit, tags, onToast }: {
               </button>
               {isGenreOpen && (
                 <div className="absolute z-50 w-full mt-1 bg-popover border border-border rounded-xl shadow-lg max-h-60 overflow-y-auto">
-                  {GENRES.map((option) => (
+                  {genres.map((option) => (
                     <button
                       key={option}
                       type="button"
@@ -884,6 +908,22 @@ function BookForm({ initial, onSubmit, onCancel, isEdit, tags, onToast }: {
                       {option}
                     </button>
                   ))}
+                  <div className="border-t border-border p-3">
+                    {isAddingGenre ? <div className="space-y-2">
+                      <label htmlFor="new-genre" className="block text-xs font-semibold">Nome do novo gênero</label>
+                      <input id="new-genre" type="text" value={newGenre} maxLength={80} autoFocus disabled={savingGenre} autoComplete="off" onChange={event=>setNewGenre(event.target.value)} onKeyDown={event=>{
+                        if(event.key==="Enter") {
+                          event.preventDefault();event.stopPropagation();void addGenre();
+                        } else if(event.key==="Escape") {
+                          event.preventDefault();event.stopPropagation();if(!savingGenre)setIsAddingGenre(false);
+                        }
+                      }} className={inputCls} placeholder="Ex: Ficção científica"/>
+                      <div className="flex gap-2">
+                        <button type="button" disabled={savingGenre||!newGenre.trim()} onClick={()=>void addGenre()} className="px-3 py-2 rounded-lg bg-primary text-primary-foreground text-xs font-semibold disabled:opacity-40">{savingGenre?"Adicionando...":"Adicionar gênero"}</button>
+                        <button type="button" disabled={savingGenre} onClick={()=>{setIsAddingGenre(false);setNewGenre("");}} className="px-3 py-2 rounded-lg bg-secondary text-xs font-semibold">Cancelar</button>
+                      </div>
+                    </div> : <button type="button" onClick={()=>{setNewGenre("");setIsAddingGenre(true);}} className="flex items-center gap-2 w-full text-left text-sm font-semibold text-primary"><Plus size={14}/>Novo gênero</button>}
+                  </div>
                 </div>
               )}
             </div>
@@ -1165,6 +1205,7 @@ function TagsPage({ tags, books, onReload }: { tags: TagDef[]; books: Book[]; on
 export default function App() {
   const [books, setBooks] = useState<Book[]>([]);
   const [tags, setTags] = useState<TagDef[]>([]);
+  const [genres, setGenres] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [storagePath, setStoragePath] = useState("");
   const [paletteId, setPaletteId] = useState(() => {
@@ -1210,7 +1251,15 @@ export default function App() {
   const favorites = useMemo(() => books.filter((b) => b.isFavorite).map((b) => b.id), [books]);
   const readBooks = useMemo(() => books.filter((b) => b.isRead).map((b) => b.id), [books]);
 
-  const reloadBooks = async () => setBooks(await window.api.books.getAll());
+  const reloadBooks = async () => {
+    const [items, names] = await Promise.all([window.api.books.getAll(), window.api.genres.getAll()]);
+    setBooks(items);setGenres(names);
+  };
+  const handleAddGenre = async (name: string) => {
+    const saved = await window.api.genres.add(name);
+    setGenres(await window.api.genres.getAll());
+    return saved;
+  };
   const reloadTags = async () => setTags(await window.api.tags.getAll());
 
   useEffect(() => {
@@ -1371,7 +1420,7 @@ export default function App() {
   const filtered = useMemo(() => {
     return books.filter((b) => {
       const matchesSearch = bookMatchesSearch(b, search);
-      const matchesGenre = selectedGenre === "Todos" || b.genre === selectedGenre;
+      const matchesGenre = selectedGenre === "Todos" || genreKey(b.genre) === genreKey(selectedGenre);
       const matchesRead = readFilter === "todos" || b.readingStatus === readFilter;
       const matchesTag = selectedTagId === null || b.tagIds.includes(selectedTagId);
       return matchesSearch && matchesGenre && matchesRead && matchesTag;
@@ -1451,7 +1500,7 @@ export default function App() {
 
   const openEdit = (book: Book) => { setEditingBook(book); setSelectedBook(null); setView("edit"); };
 
-  const sidebarProps = { search, setSearch, readFilter, setReadFilter, selectedGenre, setSelectedGenre, selectedTagId, setSelectedTagId, books, readBooks, favorites, tags };
+  const sidebarProps = { search, setSearch, readFilter, setReadFilter, selectedGenre, setSelectedGenre, selectedTagId, setSelectedTagId, books, readBooks, favorites, tags, genres };
 
   const navBtn = (v: View, icon: React.ReactNode, label: string) => (
     <button
@@ -1675,6 +1724,8 @@ export default function App() {
           {view === "add" && (
             <BookForm
               initial={EMPTY_FORM}
+              genres={genres}
+              onAddGenre={handleAddGenre}
               onSubmit={handleAdd}
               onCancel={() => setView("catalog")}
               isEdit={false}
@@ -1699,6 +1750,8 @@ export default function App() {
                 format: editingBook.format || "Físico", location: editingBook.location || "", borrowedBy: editingBook.borrowedBy || "", notes: editingBook.notes || "", isbn:editingBook.isbn||"",edition:editingBook.edition||"",publisher:editingBook.publisher||"",
               }}
               onSubmit={handleEdit}
+              genres={genres}
+              onAddGenre={handleAddGenre}
               onCancel={() => { setView("catalog"); setEditingBook(null); }}
               isEdit={true}
               tags={tags}

@@ -46,6 +46,7 @@ function createDataService(getLibrary, replaceLibrary) {
           DELETE FROM reading_sessions;
           DELETE FROM books;
           DELETE FROM tags;
+          DELETE FROM genres;
           DELETE FROM sqlite_sequence WHERE name IN ('books','tags','book_notes','book_loans','reading_sessions');
         `);
       });

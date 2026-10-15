@@ -201,6 +201,12 @@ app.whenReady().then(async () => {
   ipcMain.handle("books:returnLoan", wrap((_e, id) => booksApi.returnLoan(id)));
 
   ipcMain.handle("tags:getAll", wrap(() => tagsApi.getAll()));
+  ipcMain.handle("genres:getAll", wrap(() => library.genresApi.getAll()));
+  ipcMain.handle("genres:add", wrap((_e, name) => {
+    const genre = library.genresApi.add(name);
+    announceChange();
+    return genre;
+  }));
   ipcMain.handle("tags:add", wrap((_e, data) => tagsApi.add(data)));
   ipcMain.handle("tags:update", wrap((_e, id, data) => tagsApi.update(id, data)));
   ipcMain.handle("tags:delete", wrap((_e, id) => tagsApi.delete(id)));

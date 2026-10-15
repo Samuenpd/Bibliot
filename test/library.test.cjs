@@ -5,7 +5,7 @@ const os=require("os");
 const path=require("path");
 const {DatabaseSync}=require("node:sqlite");
 const AdmZip=require("adm-zip");
-const {createLibrary,duplicateMatches}=require("../electron/db.cjs");
+const {createLibrary,duplicateMatches,SCHEMA_VERSION}=require("../electron/db.cjs");
 const {createDataService,parseCsv}=require("../electron/data-service.cjs");
 
 const roots=[];const temp=()=>{const root=fs.mkdtempSync(path.join(os.tmpdir(),"bibip-test-"));roots.push(root);return root;};
@@ -64,7 +64,7 @@ test("falha ao excluir restaura capas e reverte a transação",()=>{
   } finally {lib.close();}
 });
 
-test("inicializa diretório vazio e reabre biblioteca existente",()=>{const root=temp();let lib=createLibrary(root);assert.ok(fs.existsSync(path.join(root,"biblioteca.db")));assert.ok(fs.existsSync(path.join(root,"covers")));lib.booksApi.add(book());lib.close();lib=createLibrary(root);assert.equal(lib.booksApi.getAll().length,1);assert.equal(lib.db.prepare("PRAGMA user_version").get().user_version,3);lib.close();});
+test("inicializa diretório vazio e reabre biblioteca existente",()=>{const root=temp();let lib=createLibrary(root);assert.ok(fs.existsSync(path.join(root,"biblioteca.db")));assert.ok(fs.existsSync(path.join(root,"covers")));lib.booksApi.add(book());lib.close();lib=createLibrary(root);assert.equal(lib.booksApi.getAll().length,1);assert.equal(lib.db.prepare("PRAGMA user_version").get().user_version,SCHEMA_VERSION);lib.close();});
 
 test("migra is_read preservando lidos, não lidos, tags, notas e empréstimos",()=>{const root=temp(),db=new DatabaseSync(path.join(root,"biblioteca.db"));db.exec(`CREATE TABLE books(id INTEGER PRIMARY KEY,title TEXT NOT NULL,author TEXT NOT NULL,is_read INTEGER DEFAULT 0,is_favorite INTEGER DEFAULT 0,pages INTEGER DEFAULT 0);CREATE TABLE tags(id INTEGER PRIMARY KEY,name TEXT,color TEXT);CREATE TABLE book_tags(book_id INTEGER,tag_id INTEGER,PRIMARY KEY(book_id,tag_id));CREATE TABLE book_notes(id INTEGER PRIMARY KEY,book_id INTEGER,content TEXT,created_at TEXT,updated_at TEXT);CREATE TABLE book_loans(id INTEGER PRIMARY KEY,book_id INTEGER,borrower TEXT,lent_at TEXT,due_at TEXT,returned_at TEXT);INSERT INTO books VALUES(1,'Lido','A',1,0,100),(2,'Pendente','B',0,0,80);INSERT INTO tags VALUES(1,'Minha tag','#fff');INSERT INTO book_tags VALUES(1,1);INSERT INTO book_notes VALUES(1,1,'nota','2020','2020');INSERT INTO book_loans VALUES(1,1,'Pessoa','2020',NULL,NULL);`);db.close();const lib=createLibrary(root),books=lib.booksApi.getAll();assert.equal(books.find(b=>b.id===1).readingStatus,"completed");assert.equal(books.find(b=>b.id===2).readingStatus,"want_to_read");assert.equal(lib.booksApi.getNotes(1).length,1);assert.equal(lib.booksApi.getLoans(1).length,1);assert.deepEqual(books.find(b=>b.id===1).tagIds,[1]);lib.close();});
 

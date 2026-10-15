@@ -27,6 +27,11 @@ const type = value => evaluate(`{
   Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,${JSON.stringify(value)});
   input.dispatchEvent(new Event('input',{bubbles:true}));
 }`);
+const typeSelector = (selector, value) => evaluate(`{
+  const input=document.querySelector(${JSON.stringify(selector)});
+  Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,${JSON.stringify(value)});
+  input.dispatchEvent(new Event('input',{bubbles:true}));
+}`);
 
 app.whenReady().then(async () => {
   try {
@@ -35,6 +40,10 @@ app.whenReady().then(async () => {
     fs.writeFileSync(path.join(library.storageRoot, "covers", "test.jpg"), "test");
     const service = createDataService(() => library, async () => {});
     ipcMain.handle("books:getAll", () => library.booksApi.getAll());
+    ipcMain.handle("books:add", (_event, data) => library.booksApi.add(data));
+    ipcMain.handle("books:findDuplicates", (_event, data) => library.booksApi.findDuplicates(data));
+    ipcMain.handle("genres:getAll", () => library.genresApi.getAll());
+    ipcMain.handle("genres:add", (_event, name) => library.genresApi.add(name));
     ipcMain.handle("tags:getAll", () => library.tagsApi.getAll());
     ipcMain.handle("settings:getStoragePath", () => library.storageRoot);
     ipcMain.handle("settings:openStoragePath", () => { opened++; });
@@ -47,6 +56,24 @@ app.whenReady().then(async () => {
     } });
     await win.loadFile(path.join(__dirname, "..", "dist", "index.html"));
     await until(`Array.from(document.querySelectorAll('button')).some(b=>b.textContent.trim()==='Configurações')`);
+    await click("Cadastrar");
+    await until(`!!document.querySelector('[aria-label="Selecionar gênero"]')`);
+    await evaluate(`document.querySelector('[aria-label="Selecionar gênero"]').click()`);
+    await click("Novo gênero");
+    await until(`!!document.getElementById('new-genre')`);
+    assert.equal(await evaluate(`Array.from(document.querySelectorAll('button')).find(b=>b.textContent.trim()==='Adicionar gênero').disabled`), true);
+    await typeSelector("#new-genre", "Space Opera");
+    await evaluate(`document.getElementById('new-genre').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}))`);
+    await until(`document.querySelector('[aria-label="Selecionar gênero"]').textContent.includes('Space Opera')`);
+    assert.equal(library.booksApi.getAll().length, 1, "Enter no gênero não pode cadastrar o livro");
+    assert.ok(library.genresApi.getAll().includes("Space Opera"));
+    await typeSelector('input[placeholder="Nome do livro"]', "Livro espacial");
+    await typeSelector('input[placeholder="Nome do autor"]', "Autora");
+    await click("Adicionar ao acervo");
+    await until(`!document.querySelector('[aria-label="Selecionar gênero"]')`);
+    await click("Space Opera");
+    await until(`document.querySelector('main').textContent.includes('Livro espacial')&&!document.querySelector('main').textContent.includes('Smoke test')`);
+    assert.equal(library.booksApi.getAll().find(book=>book.title==="Livro espacial").genre, "Space Opera");
     await click("Configurações");
     await until(`document.querySelector('h1')?.textContent==='Configurações'`);
     assert.deepEqual(await evaluate(`Array.from(document.querySelectorAll('main h2')).map(h=>h.textContent)`), [
@@ -62,10 +89,10 @@ app.whenReady().then(async () => {
     await type("BIBIP");
     await evaluate(`document.querySelector('[role="alertdialog"] form').requestSubmit()`);
     assert.equal(cleared, 0);
-    assert.equal(library.booksApi.getAll().length, 1);
+    assert.equal(library.booksApi.getAll().length, 2);
     await click("Cancelar");
     await until(`!document.querySelector('[role="alertdialog"]')`);
-    assert.equal(library.booksApi.getAll().length, 1);
+    assert.equal(library.booksApi.getAll().length, 2);
     await click("Excluir todos os dados");
     await until(`!!document.getElementById('delete-library-confirmation')`);
     assert.equal(await evaluate(`document.getElementById('delete-library-confirmation').value`), "");
@@ -77,7 +104,8 @@ app.whenReady().then(async () => {
     assert.deepEqual(library.booksApi.getAll(), []);
     assert.deepEqual(library.tagsApi.getAll(), []);
     assert.deepEqual(fs.readdirSync(path.join(library.storageRoot, "covers")), []);
-    console.log("Settings smoke test passed: layout, open folder, cancel, typed confirmation, deletion.");
+    assert.equal(library.genresApi.getAll().includes("Space Opera"), false);
+    console.log("UI smoke test passed: create genre, save book, filter catalog, settings and deletion.");
     app.exit(0);
   } catch (error) {
     console.error(error);
