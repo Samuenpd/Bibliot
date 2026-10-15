@@ -27,10 +27,12 @@ contextBridge.exposeInMainWorld("api", {
     delete: (id) => ipcRenderer.invoke("tags:delete", id),
   },
   settings: {
+    openStoragePath: () => ipcRenderer.invoke("settings:openStoragePath"),
     getStoragePath: () => ipcRenderer.invoke("settings:getStoragePath"),
     chooseStoragePath: () => ipcRenderer.invoke("settings:chooseStoragePath"),
   },
   data: {
+    clearLibrary: (confirmation) => ipcRenderer.invoke("data:clearLibrary", confirmation),
     createBackup: () => ipcRenderer.invoke("data:createBackup"),
     selectBackup: () => ipcRenderer.invoke("data:selectBackup"),
     restoreBackup: (file) => ipcRenderer.invoke("data:restoreBackup", file),

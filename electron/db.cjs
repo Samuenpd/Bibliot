@@ -15,6 +15,7 @@ function columns(db, table) { return new Set(db.prepare(`PRAGMA table_info(${tab
 function addColumn(db, table, name, definition) { if (!columns(db, table).has(name)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${definition}`); }
 
 function migrate(db) {
+  const isInitialMigration = db.prepare("PRAGMA user_version").get().user_version === 0;
   db.exec(`
     CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS tags (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL COLLATE NOCASE, color TEXT NOT NULL);
@@ -51,7 +52,7 @@ function migrate(db) {
       SELECT id,NULL,NULL,CASE WHEN pages > 0 THEN pages ELSE current_page END,'completed' FROM books b
       WHERE b.is_read=1 AND NOT EXISTS(SELECT 1 FROM reading_sessions r WHERE r.book_id=b.id);
     `);
-    for (const tag of [{ name: "Laura", color: "#d97148" }, { name: "Silvia", color: "#e8a0a8" }]) db.prepare("INSERT OR IGNORE INTO tags (name, color) VALUES (?, ?)").run(tag.name, tag.color);
+    if (isInitialMigration) for (const tag of [{ name: "Laura", color: "#d97148" }, { name: "Silvia", color: "#e8a0a8" }]) db.prepare("INSERT OR IGNORE INTO tags (name, color) VALUES (?, ?)").run(tag.name, tag.color);
   });
 }
 

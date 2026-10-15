@@ -12,6 +12,58 @@ const roots=[];const temp=()=>{const root=fs.mkdtempSync(path.join(os.tmpdir(),"
 test.after(()=>roots.forEach(root=>fs.rmSync(root,{recursive:true,force:true})));
 const book=(overrides={})=>({title:"Livro",author:"Autora",genre:"Romance",year:2020,rating:4,pages:100,cover:"",description:"",featured:false,tagIds:[],format:"Físico",location:"",borrowedBy:"",notes:"",isbn:"",edition:"",publisher:"",readingStatus:"want_to_read",currentPage:0,...overrides});
 
+test("excluir tudo exige confirmação exata e não altera dados sem ela",()=>{
+  const root=temp(),lib=createLibrary(root),service=createDataService(()=>lib,async()=>{});
+  try {
+    lib.booksApi.add(book());
+    fs.writeFileSync(path.join(root,"covers","capa.jpg"),"capa");
+    for(const confirmation of [undefined,null,"","BIBIP","bibip ","outro"])
+      assert.throws(()=>service.clearLibrary(confirmation),/bibip/);
+    assert.equal(lib.booksApi.getAll().length,1);
+    assert.equal(fs.readFileSync(path.join(root,"covers","capa.jpg"),"utf8"),"capa");
+  } finally {lib.close();}
+});
+
+test("excluir tudo limpa o acervo e mantém outros arquivos, pastas e bibliotecas",()=>{
+  const root=temp(),other=createLibrary(temp());let lib=createLibrary(root);
+  try {
+    const service=createDataService(()=>lib,async()=>{});
+    const tagId=lib.tagsApi.add({name:"Minha tag",color:"#fff"});
+    const id=lib.booksApi.add(book({tagIds:[tagId],isFavorite:true}));
+    lib.booksApi.addNote(id,"Nota");lib.booksApi.addLoan(id,"Ana","2026-01-01",null);
+    lib.booksApi.updateReading(id,{status:"reading",currentPage:12});
+    fs.writeFileSync(path.join(root,"covers","capa.jpg"),"capa");
+    fs.writeFileSync(path.join(root,"outro-arquivo.txt"),"preservar");
+    other.booksApi.add(book({title:"Outra biblioteca"}));
+    assert.equal(service.clearLibrary("bibip"),true);
+    for(const table of ["books","tags","book_tags","book_notes","book_loans","reading_sessions"])
+      assert.equal(lib.db.prepare(`SELECT count(*) total FROM ${table}`).get().total,0,table);
+    assert.deepEqual(fs.readdirSync(path.join(root,"covers")),[]);
+    assert.equal(fs.readFileSync(path.join(root,"outro-arquivo.txt"),"utf8"),"preservar");
+    assert.equal(other.booksApi.getAll()[0].title,"Outra biblioteca");
+    assert.ok(lib.integrityCheck());
+    lib.close();lib=createLibrary(root);
+    assert.deepEqual(lib.booksApi.getAll(),[]);assert.deepEqual(lib.tagsApi.getAll(),[]);
+    assert.equal(service.clearLibrary("bibip"),true);
+    assert.ok(lib.booksApi.add(book()));
+    assert.equal(fs.readdirSync(root).some(name=>name.startsWith(".bibip-clear-")),false);
+  } finally {lib.close();other.close();}
+});
+
+test("falha ao excluir restaura capas e reverte a transação",()=>{
+  const root=temp(),lib=createLibrary(root),service=createDataService(()=>lib,async()=>{});
+  try {
+    const id=lib.booksApi.add(book());lib.booksApi.addNote(id,"Preservar nota");
+    fs.writeFileSync(path.join(root,"covers","capa.jpg"),"Preservar capa");
+    lib.db.exec("CREATE TRIGGER prevent_clear BEFORE DELETE ON books BEGIN SELECT RAISE(ABORT, 'falha simulada'); END");
+    assert.throws(()=>service.clearLibrary("bibip"),/falha simulada/);
+    assert.equal(lib.booksApi.getAll().length,1);
+    assert.equal(lib.booksApi.getNotes(id)[0].content,"Preservar nota");
+    assert.equal(fs.readFileSync(path.join(root,"covers","capa.jpg"),"utf8"),"Preservar capa");
+    assert.equal(fs.readdirSync(root).some(name=>name.startsWith(".bibip-clear-")),false);
+  } finally {lib.close();}
+});
+
 test("inicializa diretório vazio e reabre biblioteca existente",()=>{const root=temp();let lib=createLibrary(root);assert.ok(fs.existsSync(path.join(root,"biblioteca.db")));assert.ok(fs.existsSync(path.join(root,"covers")));lib.booksApi.add(book());lib.close();lib=createLibrary(root);assert.equal(lib.booksApi.getAll().length,1);assert.equal(lib.db.prepare("PRAGMA user_version").get().user_version,3);lib.close();});
 
 test("migra is_read preservando lidos, não lidos, tags, notas e empréstimos",()=>{const root=temp(),db=new DatabaseSync(path.join(root,"biblioteca.db"));db.exec(`CREATE TABLE books(id INTEGER PRIMARY KEY,title TEXT NOT NULL,author TEXT NOT NULL,is_read INTEGER DEFAULT 0,is_favorite INTEGER DEFAULT 0,pages INTEGER DEFAULT 0);CREATE TABLE tags(id INTEGER PRIMARY KEY,name TEXT,color TEXT);CREATE TABLE book_tags(book_id INTEGER,tag_id INTEGER,PRIMARY KEY(book_id,tag_id));CREATE TABLE book_notes(id INTEGER PRIMARY KEY,book_id INTEGER,content TEXT,created_at TEXT,updated_at TEXT);CREATE TABLE book_loans(id INTEGER PRIMARY KEY,book_id INTEGER,borrower TEXT,lent_at TEXT,due_at TEXT,returned_at TEXT);INSERT INTO books VALUES(1,'Lido','A',1,0,100),(2,'Pendente','B',0,0,80);INSERT INTO tags VALUES(1,'Minha tag','#fff');INSERT INTO book_tags VALUES(1,1);INSERT INTO book_notes VALUES(1,1,'nota','2020','2020');INSERT INTO book_loans VALUES(1,1,'Pessoa','2020',NULL,NULL);`);db.close();const lib=createLibrary(root),books=lib.booksApi.getAll();assert.equal(books.find(b=>b.id===1).readingStatus,"completed");assert.equal(books.find(b=>b.id===2).readingStatus,"want_to_read");assert.equal(lib.booksApi.getNotes(1).length,1);assert.equal(lib.booksApi.getLoans(1).length,1);assert.deepEqual(books.find(b=>b.id===1).tagIds,[1]);lib.close();});

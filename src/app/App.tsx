@@ -64,8 +64,8 @@ declare global {
         update: (id: number, data: Omit<TagDef, "id">) => Promise<void>;
         delete: (id: number) => Promise<void>;
       };
-      settings: { getStoragePath: () => Promise<string>; chooseStoragePath: () => Promise<string | null> };
-      data: { createBackup:()=>Promise<string|null>; selectBackup:()=>Promise<{file:string;manifest:any}|null>; restoreBackup:(file:string)=>Promise<boolean>; exportCatalog:(format:"csv"|"json")=>Promise<string|null>; selectImport:()=>Promise<any>; previewImport:(file:string,mapping:Record<string,string>)=>Promise<any>; confirmImport:(preview:any,selected:number[])=>Promise<{imported:number;skipped:number}> };
+      settings: { getStoragePath: () => Promise<string>; chooseStoragePath: () => Promise<string | null>; openStoragePath: () => Promise<void> };
+      data: { clearLibrary:(confirmation:string)=>Promise<boolean>; createBackup:()=>Promise<string|null>; selectBackup:()=>Promise<{file:string;manifest:any}|null>; restoreBackup:(file:string)=>Promise<boolean>; exportCatalog:(format:"csv"|"json")=>Promise<string|null>; selectImport:()=>Promise<any>; previewImport:(file:string,mapping:Record<string,string>)=>Promise<any>; confirmImport:(preview:any,selected:number[])=>Promise<{imported:number;skipped:number}> };
       onLibraryChanged: (callback:()=>void) => ()=>void;
       downloadImage: (url: string) => Promise<string>;
       downloadBestImage: (urls: string[]) => Promise<string>;
@@ -1477,7 +1477,7 @@ export default function App() {
         <section className="w-full max-w-lg bg-card border border-border rounded-3xl p-7 sm:p-9 shadow-xl">
           <BibipMark accent={activePalette.color} bookmark={activePalette.bookmark} className="mb-4 h-10 w-auto" />
           <h1 className="text-2xl sm:text-3xl font-bold text-foreground mb-2" style={{ fontFamily: "'Playfair Display', serif" }}>Onde salvar sua biblioteca?</h1>
-          <p className="text-sm text-muted-foreground leading-relaxed mb-6">Antes de começar, escolha uma pasta para guardar seus livros e capas. Você pode escolher o HD externo agora e alterar esse local depois nas Configurações.</p>
+          <p className="text-sm text-muted-foreground leading-relaxed mb-6">Escolha onde guardar seus livros e capas. O acervo ficará na subpasta Bi-Bip do local escolhido. Você pode alterar esse local depois nas Configurações.</p>
           <button onClick={async () => { await window.api.settings.chooseStoragePath(); }} className="w-full px-4 py-3 rounded-xl bg-primary text-primary-foreground text-sm font-semibold hover:opacity-90 transition-opacity">Escolher pasta para salvar</button>
         </section>
       </div>
@@ -1710,7 +1710,7 @@ export default function App() {
           {view === "settings" && (
             <section className="max-w-2xl mx-auto px-4 sm:px-6 py-8 w-full">
               <h1 className="text-2xl font-bold mb-2">Configurações</h1>
-              <p className="text-sm text-muted-foreground mb-6">Escolha onde guardar a biblioteca e as capas. Uma cópia dos dados será levada para o novo local e o Bi-Bip será reiniciado.</p>
+              <p className="text-sm text-muted-foreground mb-6">Gerencie sua biblioteca, aparência e armazenamento.</p>
               <div className="bg-card border border-border rounded-2xl p-5 space-y-4">
                 <div>
                   <h2 className="font-semibold">Paleta de cores</h2>
@@ -1726,12 +1726,6 @@ export default function App() {
                   </div>
                 </div>
               </div>
-              <div className="mt-4 bg-card border border-border rounded-2xl p-5 space-y-4">
-                <h2 className="font-semibold">Local de armazenamento</h2>
-                <p className="text-sm text-muted-foreground break-all">{storagePath}</p>
-                <button onClick={async () => { const selected = await window.api.settings.chooseStoragePath(); if (selected) setStoragePath(selected); }} className="px-4 py-2.5 rounded-xl bg-primary text-primary-foreground text-sm font-semibold">Escolher pasta</button>
-              </div>
-              <DataManagement onChanged={async()=>{await Promise.all([reloadBooks(),reloadTags()]);}} onToast={showToast}/>
               <div className="mt-4 bg-card border border-border rounded-2xl p-5">
                 <h2 className="font-semibold">Atalhos de teclado</h2>
                 <div className="mt-3 grid gap-2 text-sm text-muted-foreground sm:grid-cols-2">
@@ -1741,6 +1735,23 @@ export default function App() {
                   <p><kbd className="rounded-md border border-border bg-secondary px-1.5 py-0.5 text-xs text-foreground">Esc</kbd> Fechar janela ou menu</p>
                 </div>
               </div>
+              <div className="mt-4 bg-card border border-border rounded-2xl p-5 space-y-4">
+                <h2 className="font-semibold">Local de armazenamento</h2>
+                <p className="text-sm text-muted-foreground break-all">{storagePath}</p>
+                <p className="text-sm text-muted-foreground">O acervo fica na subpasta Bi-Bip do local escolhido. “Abrir pasta” abre o local exibido acima, com o banco e as capas.</p>
+                <div className="flex flex-wrap gap-2">
+                  <button onClick={async () => { try { const selected = await window.api.settings.chooseStoragePath(); if (selected) setStoragePath(selected); } catch(error) { showToast(error instanceof Error?error.message:"Não foi possível escolher a pasta.","error"); } }} className="px-4 py-2.5 rounded-xl bg-primary text-primary-foreground text-sm font-semibold">Escolher pasta</button>
+                  <button onClick={async () => { try { await window.api.settings.openStoragePath(); } catch(error) { showToast(error instanceof Error?error.message:"Não foi possível abrir a pasta.","error"); } }} className="px-4 py-2.5 rounded-xl bg-secondary text-sm font-semibold">Abrir pasta</button>
+                </div>
+              </div>
+              <DataManagement onChanged={async()=>{await Promise.all([reloadBooks(),reloadTags()]);}} onCleared={async()=>{
+                setSelectedBook(null);setEditingBook(null);setConfirmDelete(null);setDuplicatePrompt(null);
+                setBookNotes([]);setBookLoans([]);setReadingSessions([]);setNoteDraft("");setEditingNoteId(null);
+                setSearch("");setSelectedGenre("Todos");setSelectedTagId(null);setReadFilter("todos");
+                localStorage.removeItem("bibip-color-palette");localStorage.removeItem("bibip-sidebar-width");
+                setPaletteId("orange");setSidebarWidth(256);
+                await Promise.all([reloadBooks(),reloadTags()]);
+              }} onToast={showToast}/>
             </section>
           )}
         </main>

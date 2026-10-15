@@ -1,11 +1,13 @@
 import { useState } from "react";
-import { Archive, Download, FileJson, FileSpreadsheet, RotateCcw, Upload } from "lucide-react";
+import { Archive, Download, FileJson, FileSpreadsheet, RotateCcw, Upload, Trash2 } from "lucide-react";
+import { AlertDialog, AlertDialogContent, AlertDialogHeader, AlertDialogTitle, AlertDialogDescription, AlertDialogFooter, AlertDialogCancel } from "./ui/alert-dialog";
 
 type Toast = (message: string, type: "success" | "error" | "info") => void;
 type Preview = { file: string; sourceHeaders: string[]; rows: Array<{ index:number; book:any; valid:boolean; errors:string[]; duplicates:Array<{confidence:string;source:string;book:any;reasons:string[]}> }> };
 const targets=[['','Ignorar'],['title','Título'],['author','Autor'],['isbn','ISBN'],['genre','Gênero'],['year','Ano'],['pages','Páginas'],['rating','Avaliação'],['description','Descrição'],['format','Formato'],['location','Localização'],['edition','Edição'],['publisher','Editora'],['readingStatus','Estado de leitura'],['currentPage','Página atual']];
 
-export function DataManagement({onChanged,onToast}:{onChanged:()=>Promise<void>;onToast:Toast}){
+export function DataManagement({onChanged,onCleared,onToast}:{onChanged:()=>Promise<void>;onCleared:()=>Promise<void>;onToast:Toast}){
+  const [deleteOpen,setDeleteOpen]=useState(false),[confirmation,setConfirmation]=useState("");
   const [preview,setPreview]=useState<Preview|null>(null),[selected,setSelected]=useState<number[]>([]),[mapping,setMapping]=useState<Record<string,string>>({}),[backup,setBackup]=useState<{file:string;manifest:any}|null>(null),[busy,setBusy]=useState(false);
   const run=async(fn:()=>Promise<void>)=>{try{setBusy(true);await fn();}catch(error){onToast(error instanceof Error?error.message:"A operação falhou.","error");}finally{setBusy(false);}};
   const pickImport=()=>run(async()=>{const result=await window.api.data.selectImport();if(result){setMapping({});setPreview(result);setSelected(result.rows.filter((r:any)=>r.valid).map((r:any)=>r.index));}});
@@ -15,5 +17,32 @@ export function DataManagement({onChanged,onToast}:{onChanged:()=>Promise<void>;
     <div className="bg-card border border-border rounded-2xl p-5 space-y-3"><div><h2 className="font-semibold">Importação e exportação</h2><p className="text-sm text-muted-foreground mt-1">CSV e JSON servem para transferência e análise. Para recuperar a biblioteca fielmente, use o backup.</p></div><div className="flex flex-wrap gap-2"><button onClick={()=>run(async()=>{if(await window.api.data.exportCatalog('csv'))onToast("CSV exportado.","success");})} className="px-3 py-2 rounded-xl bg-secondary text-sm font-semibold"><FileSpreadsheet size={14} className="inline mr-2"/>Exportar CSV</button><button onClick={()=>run(async()=>{if(await window.api.data.exportCatalog('json'))onToast("JSON exportado.","success");})} className="px-3 py-2 rounded-xl bg-secondary text-sm font-semibold"><FileJson size={14} className="inline mr-2"/>Exportar JSON</button><button onClick={pickImport} className="px-3 py-2 rounded-xl bg-primary text-primary-foreground text-sm font-semibold"><Upload size={14} className="inline mr-2"/>Importar arquivo</button></div>
       {preview&&<div className="border-t border-border pt-4 space-y-3"><div className="flex items-center justify-between"><p className="text-sm font-semibold">Prévia: {preview.rows.filter(r=>r.valid).length} válidos, {preview.rows.filter(r=>!r.valid).length} inválidos, {preview.rows.filter(r=>r.duplicates.length).length} possíveis duplicados</p><button onClick={()=>setPreview(null)} className="text-xs text-muted-foreground">Cancelar</button></div><details className="rounded-xl bg-secondary/50 p-3"><summary className="text-xs font-semibold cursor-pointer">Mapear colunas</summary><div className="grid sm:grid-cols-2 gap-2 mt-3">{preview.sourceHeaders.map(header=><label key={header} className="text-xs">{header}<select value={mapping[header]??'__auto__'} onChange={e=>setMapping(m=>{const next={...m};if(e.target.value==="__auto__")delete next[header];else next[header]=e.target.value;return next;})} className="block w-full mt-1 rounded-lg border border-border bg-background p-2"><option value="__auto__">Automático</option>{targets.map(([value,label])=><option key={value} value={value}>{label}</option>)}</select></label>)}</div><button onClick={remap} className="mt-3 px-3 py-1.5 bg-secondary rounded-lg text-xs font-semibold">Aplicar mapeamento</button></details><div className="max-h-60 overflow-auto space-y-2">{preview.rows.map(row=><label key={row.index} className="flex gap-3 rounded-xl border border-border p-3 text-sm"><input type="checkbox" disabled={!row.valid} checked={selected.includes(row.index)} onChange={e=>setSelected(s=>e.target.checked?[...s,row.index]:s.filter(i=>i!==row.index))}/><span><strong>{row.book.title||"Sem título"}</strong> — {row.book.author||"Sem autor"}{row.errors.length>0&&<small className="block text-destructive">{row.errors.join('; ')}</small>}{row.duplicates.length>0&&<small className="block text-amber-700">Possível duplicata ({row.duplicates[0].confidence==='strong'?'forte':'provável'}): {row.duplicates[0].book.title}</small>}</span></label>)}</div><button disabled={!selected.length||busy} onClick={()=>run(async()=>{const summary=await window.api.data.confirmImport(preview,selected);setPreview(null);await onChanged();onToast(`${summary.imported} livro(s) importado(s); ${summary.skipped} ignorado(s).`,"success");})} className="px-4 py-2 rounded-xl bg-primary text-primary-foreground text-sm font-semibold disabled:opacity-40">Importar selecionados</button></div>}
     </div>
+    <div className="bg-card border border-destructive/30 rounded-2xl p-5 space-y-3">
+      <h2 className="font-semibold text-destructive flex items-center gap-2"><Trash2 size={16}/>Excluir tudo</h2>
+      <p className="text-sm text-muted-foreground">Exclua todos os livros, capas, tags, anotações, empréstimos e históricos da biblioteca atual e restaure as preferências de aparência.</p>
+      <button type="button" disabled={busy} onClick={()=>{setConfirmation("");setDeleteOpen(true);}} className="px-4 py-2 rounded-xl bg-destructive text-destructive-foreground text-sm font-semibold disabled:opacity-40">Excluir todos os dados</button>
+    </div>
+    <AlertDialog open={deleteOpen} onOpenChange={open=>{if(!busy){setDeleteOpen(open);setConfirmation("");}}}>
+      <AlertDialogContent onEscapeKeyDown={event=>{if(busy)event.preventDefault();}}>
+        <form onSubmit={event=>{event.preventDefault();if(confirmation!=="bibip"||busy)return;run(async()=>{
+          await window.api.data.clearLibrary(confirmation);
+          setPreview(null);setBackup(null);setSelected([]);setMapping({});
+          setDeleteOpen(false);setConfirmation("");
+          await onCleared();
+          onToast("Todos os dados da biblioteca foram excluídos.","success");
+        });}} className="space-y-4">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Excluir todos os dados?</AlertDialogTitle>
+            <AlertDialogDescription>Todos os livros, capas, tags, anotações, empréstimos e históricos da biblioteca atual serão apagados. Esta ação não pode ser desfeita. A pasta de armazenamento será mantida.</AlertDialogDescription>
+          </AlertDialogHeader>
+          <label htmlFor="delete-library-confirmation" className="block text-sm">Digite <strong>bibip</strong> para confirmar.</label>
+          <input id="delete-library-confirmation" type="text" value={confirmation} onChange={event=>setConfirmation(event.target.value)} disabled={busy} autoComplete="off" spellCheck={false} className="w-full rounded-xl border border-border bg-background px-3 py-2 text-sm"/>
+          <AlertDialogFooter>
+            <AlertDialogCancel type="button" disabled={busy}>Cancelar</AlertDialogCancel>
+            <button type="submit" disabled={confirmation!=="bibip"||busy} className="px-4 py-2 rounded-xl bg-destructive text-destructive-foreground text-sm font-semibold disabled:opacity-40">{busy?"Excluindo...":"Confirmar exclusão"}</button>
+          </AlertDialogFooter>
+        </form>
+      </AlertDialogContent>
+    </AlertDialog>
   </div>;
 }

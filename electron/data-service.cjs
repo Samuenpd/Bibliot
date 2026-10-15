@@ -23,6 +23,43 @@ function cleanBook(raw){return {title:String(raw.title||"").trim(),author:String
 function validateRows(rows,existing){return rows.map((raw,index)=>{const book=cleanBook(raw);const errors=[];if(!book.title)errors.push("Título ausente");if(!book.author)errors.push("Autor ausente");if(!Number.isInteger(book.pages)||book.pages<0)errors.push("Número de páginas inválido");if(!Number.isInteger(book.currentPage)||book.currentPage<0||(book.pages>0&&book.currentPage>book.pages))errors.push("Progresso inválido");const prior=rows.slice(0,index).map(cleanBook);const duplicates=[...duplicateMatches(book,existing).map(m=>({...m,source:"library"})),...duplicateMatches(book,prior).map(m=>({...m,source:"file"}))];return {index,book,valid:errors.length===0,errors,duplicates};});}
 
 function createDataService(getLibrary, replaceLibrary) {
+  function clearLibrary(confirmation) {
+    if (confirmation !== "bibip") throw new Error('Digite "bibip" para confirmar a exclusão.');
+    const lib = getLibrary();
+    const root = path.resolve(lib.storageRoot);
+    const covers = path.resolve(root, "covers");
+    if (path.dirname(covers) !== root) throw new Error("Pasta de capas inválida.");
+    if (fs.existsSync(covers) && fs.lstatSync(covers).isSymbolicLink()) {
+      throw new Error("A pasta de capas não pode ser um link para outra pasta.");
+    }
+    // Stage covers so a database failure can restore them without data loss.
+    const staging = fs.mkdtempSync(path.join(root, ".bibip-clear-"));
+    const stagedCovers = path.join(staging, "covers");
+    try {
+      if (fs.existsSync(covers)) fs.renameSync(covers, stagedCovers);
+      fs.mkdirSync(covers, { recursive: true });
+      inTransaction(lib.db, () => {
+        lib.db.exec(`
+          DELETE FROM book_tags;
+          DELETE FROM book_notes;
+          DELETE FROM book_loans;
+          DELETE FROM reading_sessions;
+          DELETE FROM books;
+          DELETE FROM tags;
+          DELETE FROM sqlite_sequence WHERE name IN ('books','tags','book_notes','book_loans','reading_sessions');
+        `);
+      });
+    } catch (error) {
+      if (fs.existsSync(stagedCovers)) {
+        fs.rmSync(covers, { recursive: true, force: true });
+        fs.renameSync(stagedCovers, covers);
+      }
+      fs.rmdirSync(staging);
+      throw error;
+    }
+    fs.rmSync(staging, { recursive: true, force: true });
+    return true;
+  }
   async function createBackup(destination) {
     const lib=getLibrary(),temp=fs.mkdtempSync(path.join(os.tmpdir(),"bibip-backup-"));
     try { const dbCopy=path.join(temp,"biblioteca.db");await backup(lib.db,dbCopy);const check=new DatabaseSync(dbCopy,{readOnly:true});const ok=check.prepare("PRAGMA integrity_check").get();check.close();if(Object.values(ok)[0]!=="ok")throw new Error("O banco gerado para o backup não passou na verificação de integridade.");const manifest={format:"bibip-backup",formatVersion:1,schemaVersion:SCHEMA_VERSION,createdAt:new Date().toISOString(),app:"Bi-Bip"};fs.writeFileSync(path.join(temp,"manifest.json"),JSON.stringify(manifest,null,2));const zip=new AdmZip();zip.addLocalFile(dbCopy);const covers=path.join(lib.storageRoot,"covers");if(fs.existsSync(covers))zip.addLocalFolder(covers,"covers");zip.addLocalFile(path.join(temp,"manifest.json"));zip.writeZip(destination);return destination;} finally {fs.rmSync(temp,{recursive:true,force:true});}
@@ -34,6 +71,6 @@ function createDataService(getLibrary, replaceLibrary) {
   function exportCsv(destination){const books=getLibrary().booksApi.getAll();const data=[csvFields.join(";"),...books.map(book=>csvFields.map(field=>escapeCsv(book[field])).join(";"))].join("\r\n");fs.writeFileSync(destination,"\ufeff"+data,"utf8");return destination;}
   function previewImport(file,mapping={}){const text=fs.readFileSync(file,"utf8").replace(/^\ufeff/,"");let raw=[],sourceHeaders=[];if(path.extname(file).toLowerCase()===".json"){const parsed=JSON.parse(text);if(parsed.format&&parsed.format!=="bibip-export")throw new Error("Formato JSON não reconhecido.");const source=Array.isArray(parsed)?parsed:parsed.books||[];sourceHeaders=source.length?Object.keys(source[0]):[];raw=source.map(item=>mapObject(item,mapping));}else{const matrix=parseCsv(text);if(!matrix.length)throw new Error("CSV vazio.");sourceHeaders=matrix[0];raw=matrix.slice(1).map(values=>mapObject(Object.fromEntries(sourceHeaders.map((h,i)=>[h,values[i]||""])),mapping));}return {file,sourceHeaders,fields:raw.length?Object.keys(raw[0]):[],rows:validateRows(raw,getLibrary().booksApi.getAll())};}
   function importRows(rows,selectedIndexes){const lib=getLibrary(),selected=new Set(selectedIndexes||rows.map(r=>r.index)),valid=rows.filter(r=>selected.has(r.index)&&r.valid);return inTransaction(lib.db,()=>{let imported=0;for(const item of valid){const b=item.book,tagIds=[];for(const name of b.tagNames){let tag=lib.db.prepare("SELECT id FROM tags WHERE name=? COLLATE NOCASE").get(name);if(!tag){const id=lib.tagsApi.add({name,color:"#8c6a58"});tag={id};}tagIds.push(Number(tag.id));}const id=lib.booksApi.add({...b,tagIds});for(const note of b.noteItems){const content=typeof note==="string"?note:note.content;if(content)lib.booksApi.addNote(id,content);}for(const loan of b.loans||[])lib.db.prepare("INSERT INTO book_loans(book_id,borrower,lent_at,due_at,returned_at) VALUES (?,?,?,?,?)").run(id,loan.borrower,loan.lentAt,loan.dueAt||null,loan.returnedAt||null);for(const s of b.readingSessions||[])lib.db.prepare("INSERT INTO reading_sessions(book_id,started_at,completed_at,current_page,status) VALUES (?,?,?,?,?)").run(id,s.startedAt||null,s.completedAt||null,Number(s.currentPage||0),s.status||"want_to_read");imported++;}return {imported,skipped:rows.length-imported};});}
-  return {createBackup,validateBackup,restoreBackup,exportJson,exportCsv,previewImport,importRows};
+  return {clearLibrary,createBackup,validateBackup,restoreBackup,exportJson,exportCsv,previewImport,importRows};
 }
 module.exports={createDataService,parseCsv,validateRows,EXPORT_VERSION};

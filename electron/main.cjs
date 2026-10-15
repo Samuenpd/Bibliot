@@ -3,7 +3,7 @@ const path = require("path");
 const fs = require("fs");
 const crypto = require("crypto");
 const { pathToFileURL } = require("url");
-const { app, BrowserWindow, ipcMain, dialog, protocol, net } = require("electron");
+const { app, BrowserWindow, ipcMain, dialog, protocol, net, shell } = require("electron");
 
 let library, booksApi, tagsApi, dataService;
 let coversDir;
@@ -152,11 +152,11 @@ function registerCoverProtocol() {
   });
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   const { createLibrary } = require("./db.cjs");
   const { createDataService } = require("./data-service.cjs");
+  const { storageDirectory, saveStoragePath, copyLibrary, initializeStorage } = require("./storage-service.cjs");
   const storageConfigPath = path.join(app.getPath("userData"), "storage.json");
-  const configuredStoragePath = () => { try { return JSON.parse(fs.readFileSync(storageConfigPath, "utf8")).path || null; } catch { return null; } };
   const openLibrary = (root) => { library = createLibrary(root); booksApi = library.booksApi; tagsApi = library.tagsApi; coversDir = path.join(root, "covers"); };
   const announceChange = () => BrowserWindow.getAllWindows().forEach(win => win.webContents.send("library:changed"));
   const replaceLibrary = async (operation) => {
@@ -164,7 +164,7 @@ app.whenReady().then(() => {
     try { await operation(root); openLibrary(root); announceChange(); }
     catch (error) { try { openLibrary(root); } catch {} throw error; }
   };
-  openLibrary(configuredStoragePath() || app.getPath("userData"));
+  openLibrary(await initializeStorage(storageConfigPath, app.getPath("userData")));
   dataService=createDataService(()=>library,replaceLibrary);
 
   ensureCoversDir();
@@ -205,23 +205,32 @@ app.whenReady().then(() => {
   ipcMain.handle("tags:update", wrap((_e, id, data) => tagsApi.update(id, data)));
   ipcMain.handle("tags:delete", wrap((_e, id) => tagsApi.delete(id)));
   ipcMain.handle("settings:getStoragePath", wrap(() => library.storageRoot));
+  ipcMain.handle("settings:openStoragePath", wrap(async () => {
+    const error = await shell.openPath(library.storageRoot);
+    if (error) throw new Error(`Não foi possível abrir a pasta: ${error}`);
+  }));
+  ipcMain.handle("data:clearLibrary", wrap((_e, confirmation) => {
+    const result = dataService.clearLibrary(confirmation);
+    announceChange();
+    return result;
+  }));
   ipcMain.handle("settings:chooseStoragePath", wrap(async () => {
-    const result = await dialog.showOpenDialog({ title: "Escolher pasta do acervo", properties: ["openDirectory", "createDirectory"] });
+    const result = await dialog.showOpenDialog({ title: "Escolher local para a pasta Bi-Bip", defaultPath: library.storageRoot, properties: ["openDirectory", "createDirectory"] });
     if (result.canceled || !result.filePaths[0]) return null;
-    const destination = result.filePaths[0];
+    const destination = storageDirectory(result.filePaths[0]);
     const current = library.storageRoot;
     if (path.resolve(destination) === path.resolve(current)) return destination;
     fs.mkdirSync(destination,{recursive:true});const probe=path.join(destination,`.bibip-write-${process.pid}`);fs.writeFileSync(probe,"ok");fs.unlinkSync(probe);
     const existing=path.join(destination,"biblioteca.db");
     let mode="copy";
     if(fs.existsSync(existing)){const answer=await dialog.showMessageBox({type:"warning",title:"Biblioteca existente",message:"Já existe uma biblioteca nessa pasta.",detail:"Você pode usar a biblioteca existente. Nenhum arquivo será sobrescrito.",buttons:["Usar biblioteca existente","Cancelar"],defaultId:1,cancelId:1});if(answer.response!==0)return null;mode="existing";}
-    else {const answer=await dialog.showMessageBox({type:"question",title:"Transferir biblioteca",message:"Como deseja usar a nova pasta?",detail:"Copiar mantém os arquivos atuais como segurança.",buttons:["Copiar biblioteca atual","Criar biblioteca vazia","Cancelar"],defaultId:0,cancelId:2});if(answer.response===2)return null;mode=answer.response===0?"copy":"empty";}
+    else {const answer=await dialog.showMessageBox({type:"question",title:"Transferir biblioteca",message:"Como deseja usar a nova pasta Bi-Bip?",detail:`Local do acervo: ${destination}\n\nCopiar mantém os arquivos atuais como segurança.`,buttons:["Copiar biblioteca atual","Criar biblioteca vazia","Cancelar"],defaultId:0,cancelId:2});if(answer.response===2)return null;mode=answer.response===0?"copy":"empty";}
     library.db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
-    if(mode==="copy"){fs.copyFileSync(library.dbPath,existing);const sourceCovers=path.join(current,"covers"),targetCovers=path.join(destination,"covers");if(fs.existsSync(sourceCovers))fs.cpSync(sourceCovers,targetCovers,{recursive:true});}
+    if(mode==="copy") await copyLibrary(current,destination);
     const candidate=createLibrary(destination);if(!candidate.integrityCheck()){candidate.close();throw new Error("A biblioteca no novo local não passou na validação.");}candidate.close();
     library.close();
-    try { openLibrary(destination); fs.writeFileSync(storageConfigPath,JSON.stringify({path:destination},null,2)); }
-    catch(error){ openLibrary(current); throw error; }
+    try { openLibrary(destination); saveStoragePath(storageConfigPath,destination); }
+    catch(error){ if(library.storageRoot===destination) library.close(); openLibrary(current); throw error; }
     announceChange();
     return destination;
   }));
@@ -259,6 +268,10 @@ app.whenReady().then(() => {
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
+}).catch(error => {
+  console.error("Não foi possível abrir a biblioteca:", error);
+  dialog.showErrorBox("Não foi possível abrir a biblioteca", error.message);
+  app.quit();
 });
 
 app.on("window-all-closed", () => {
